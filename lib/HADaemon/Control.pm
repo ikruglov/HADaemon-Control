@@ -4,12 +4,15 @@ use strict;
 use warnings;
 
 use File::Spec;
-use Data::Dumper;
+use File::Spec::Functions;
+use File::Basename;
+use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
+use Data::Dumper;
 use POSIX qw(_exit setsid);
 
 # Accessor building
-my @accessors = qw( pid_dir pid_file quiet color_map name );
+my @accessors = qw( pid pid_dir pid_file quiet color_map name );
 foreach my $method (@accessors) {
     no strict 'refs';
     *$method = sub {
@@ -29,7 +32,7 @@ sub new {
         limit         => $limit,
         limit_options => $limit_options,
         color_map     => { red => 31, green => 32 },
-        quiet         => 0,
+        quiet         => 1,
     }, $class;
 
     foreach my $accessor (@accessors) {
@@ -79,48 +82,90 @@ sub do_start {
         my $feedback = $self->_fork() // '';
         my ($message, $color) = $feedback =~ /^(?:main|standby)$/
                               ? ("Started - $feedback", 'green')
-                              : ('Failed', 'red');
+                              : ("Started - $feedback", 'green');
+                              #: ('Failed', 'red');
 
         $self->pretty_print($message, $color);
     }
 }
 
-sub do_stop {}
-sub do_status {}
+sub do_status {
+    my ($self) = @_;
+
+    my $limit_options = $self->{limit_options};
+    my $num_of_main = $limit_options->{max_procs} // 0;
+    my $num_of_standby = $limit_options->{standby_max_procs} // 0;
+
+    my @expected_processes;
+    push @expected_processes, "main-$_" foreach (1..$num_of_main);
+    push @expected_processes, "standby-$_" foreach (1..$num_of_standby);
+
+    foreach my $name (@expected_processes) {
+        my $pidfile = catfile($self->pid_dir, "$name.pid");
+        my $pid = $self->_read_pid_file($pidfile);
+        my $is_running = $self->pid_running($pid);
+
+        my ($msg, $color) = $is_running
+                            ? ("Running - $name", 'green')
+                            : ("Not running - $name", 'red');
+
+        $self->pretty_print($msg, $color);
+    }
+}
+
+sub pretty_print {
+    my ($self, $message, $color) = @_;
+    #return if $self->quiet;
+
+    $color //= "green"; # Green is no color.
+    my $code = $self->color_map->{$color} //= 32; # Green is invalid.
+
+    local $| = 1;
+    printf("%-49s %30s\n", $self->name, "\033[$code" ."m[$message]\033[0m");
+}
+
+sub trace {
+    my ($self, $message) = @_;
+    return if $self->quiet;
+    print "$$ $message\n";
+}
+
+sub pid_running {
+    my ($self, $pid) = @_;
+    return 0 unless $pid;
+    return 0 if $pid < 1;
+    return kill 0, $pid;
+}
 
 sub _fork {
     my ($self) = @_;
     my $feedback = '';
     $self->trace("_double_fork()");
 
-    my ($pread, $pwrite); # TODO check pipe status
-    pipe($pread, $pwrite) or warn "Cannot open a pipe: $!";
+    my ($pread, $pwrite);
+    pipe($pread, $pwrite) or die "Cannot open a pipe: $!";
 
     my $pid = fork();
-    $self->trace("forked $pid") if $pid;
-    if ($pid == 0) { # Child, launch the process here.
-        close($pread) if $pread; # Close reading end of pipe
-        setsid(); # Become the process leader.
+    $pid and $self->trace("forked $pid");
+
+    if ($pid == 0) { # Child, launch the process here
+        close($pread); # Close reading end of pipe
+        setsid(); # Become the process leader
 
         my $new_pid = fork();
-        $self->trace("forked $new_pid") if $new_pid;
+        $new_pid and $self->trace("forked $new_pid");
+
         if ($new_pid == 0) { # Our double fork.
             $self->_launch_program($pwrite);
-            _exit 0;
         } elsif (not defined $new_pid) {
             warn "Cannot fork: $!";
             _exit 1;
-        } else {
-            #$self->pid($new_pid);
-            $self->trace("Set PID => $new_pid");
-            #$self->write_pid;
-            _exit 0;
         }
-    } elsif (not defined $pid) { # We couldn't fork.  =(
-        close($pread) if $pread;
-        close($pwrite) if $pwrite;
-        warn "Cannot fork: $!";
-    } else { # In the parent, $pid = child's PID, return it.
+
+        _exit 0;
+    } elsif (not defined $pid) { # We couldn't fork =(
+        die "Cannot fork: $!";
+    } else { # In the parent, $pid = child's PID, return it
         close($pwrite); # Close writting end of pipe
 
         $self->trace("waitpid()");
@@ -139,57 +184,116 @@ sub _launch_program {
     my ($self, $pipe) = @_;
     $self->trace("_launch_program()");
 
+    $self->pid($$);
+    $self->pid_file(catfile($self->pid_dir, "unknown-$$.pid"));
+    $self->_write_pid_file();
+
     my $limit = $self->{limit};
-    my $retries_callback = $limit->{retries};
+    my $retiries_classback = $limit->{retries};
+
+    my $self_weak = $self;
+    weaken($self_weak);
+
     $limit->{retries} = sub {
-        $self->trace("retries()");
-        if (defined $pipe) {
-            my $msg = 'standby';
-            $self->trace("syswrite(standby)");
-            syswrite($pipe, $msg, length($msg));
-            close($pipe);
-            undef($pipe);
+        if ($self_weak) {
+            # TODO fix potential memory leak
+            my $id = $self_weak->{limit}->{standby_lock}->lock_id();
+            $self_weak->trace("acquired standby lock $id");
+
+            # adjusting name of pidfile
+            my $pid_file = catfile($self_weak->pid_dir, "standby-$id.pid");
+            $self_weak->_rename_pid_file($pid_file);
+
+            # sending feedback that we're in standby mode
+            if ($pipe) {
+                $self_weak->_syswrite_with_timeout($pipe, "standby-$id");
+                close($pipe);
+                $pipe = undef;
+            }
+
+            $self_weak = undef;
         }
 
-        return $retries_callback;
+        return $retiries_classback;
     };
 
-    my $id = $self->{limit}->get_lock();
+    my $id = $limit->get_lock();
+    
     if (defined $pipe) {
-        my $msg = $id ? 'main' : 'failed';
-        $self->trace("syswrite($msg)");
-        syswrite($pipe, $msg, length($msg));
+        $self->_syswrite_with_timeout($pipe, $id ? "main-$id" : 'failed');
         close($pipe);
-        undef($pipe);
     }
 
-    $self->trace("running program ". ($id ? "OK" : "FAILED"));
-    $id or exit(1); # TODO call callback
-    #$self->program->($self, @args);
-    sleep(5);
+    if (not $id) {
+        $self->_unlink_pid_file();
+        $self->trace("running program FAILED");
+        exit(1); # TODO call callback
+    }
+
+    $self->trace("acquired main lock id: " . $limit->lock_id());
+    
+    # now pid file should be 'main-$id'
+    my $pid_file = catfile($self->pid_dir, "main-$id.pid");
+    $self->_rename_pid_file($pid_file);
+
+    $self->trace("running program OK");
+    sleep(10);
     $self->trace('exiting');
 }
 
-sub pretty_print {
-    my ($self, $message, $color) = @_;
-    return if $self->quiet;
+sub _read_pid_file {
+    my ($self, $pid_file) = @_;
+    return unless -f $pid_file;
 
-    $color //= "green"; # Green is no color.
-    my $code = $self->color_map->{$color} //= 32; # Green is invalid.
+    open(my $fh, "<", $pid_file) or die "Failed to read $pid_file: $!";
+    my $pid = do { local $/; <$fh> };
+    close $fh;
 
-    local $| = 1;
-    printf("%-49s %30s\n", $self->name, "\033[$code" ."m[$message]\033[0m");
+    return $pid;
+}
+
+sub _write_pid_file {
+    my ($self) = @_;
+
+    open(my $sf, ">", $self->pid_file) or die "Failed to write " . $self->pid_file . ": $!";
+    print $sf $self->pid;
+    close($sf);
+
+    $self->trace("wrote pid (" . $self->pid . ") to pid file (" . $self->pid_file . ")");
+    return $self;
+}
+
+sub _rename_pid_file {
+    my ($self, $new_pid_file) = @_;
+    return unless $self->pid_file;
+    
+    my $old_pid_file = $self->pid_file;
+    rename($old_pid_file, $new_pid_file) or die "Failed to rename pidfile: $!";
+    $self->pid_file($new_pid_file);
+
+    $self->trace("rename pid file ($old_pid_file) to ($new_pid_file)");
+    return $self;
+}
+
+sub _unlink_pid_file {
+    my ($self) = @_;
+    return unless $self->pid_file;
+
+    unlink($self->pid_file);
+    $self->trace("unlink pid file (" . $self->pid_file . ")");
+    return $self;
+}
+
+sub _syswrite_with_timeout {
+    my ($self, $pipe, $msg) = @_;
+    $self->trace("_syswrite($msg)");
+    syswrite($pipe, $msg, length($msg));
 }
 
 sub _all_actions {
     my ($self) = @_; 
     no strict 'refs';
     return map { m/^do_(.+)/ ? $1 : () } keys %{ ref($self) . '::' };
-}
-
-sub trace {
-    my ($self, $message) = @_;
-    print "$$ $message\n";
 }
 
 1;

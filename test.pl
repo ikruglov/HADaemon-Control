@@ -9,9 +9,9 @@ HADaemon::Control->new({
     pid_dir => '/tmp/test',
     limit_options => {
         max_procs => 1,
-        standby_max_procs => 1,
-        path => '/tmp/test/',
-        standby_path => '/tmp/test/standby',
+        standby_max_procs => 2,
+        path => '/tmp/test/lock',
+        standby_path => '/tmp/test/lock-standby',
     },
 })->run();
 
