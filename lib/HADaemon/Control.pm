@@ -12,7 +12,7 @@ use Data::Dumper;
 use POSIX qw(_exit setsid);
 
 # Accessor building
-my @accessors = qw( pid_dir quiet color_map name );
+my @accessors = qw( pid_dir quiet color_map name kill_timeout );
 foreach my $method (@accessors) {
     no strict 'refs';
     *$method = sub {
@@ -33,6 +33,7 @@ sub new {
         limit_options => $limit_options,
         color_map     => { red => 31, green => 32 },
         quiet         => 0,
+        kill_timeout  => 1,
     }, $class;
 
     foreach my $accessor (@accessors) {
@@ -98,13 +99,52 @@ sub do_status {
     foreach my $name (@expected_processes) {
         my $pidfile = $self->_build_pid_file($name);
         my $pid = $self->_read_pid_file($pidfile);
-        my $is_running = $self->pid_running($pid);
 
-        if ($pid && $is_running) {
+        if ($pid && $self->pid_running($pid)) {
             $self->pretty_print($name, 'Running');
         } else {
             $self->pretty_print($name, 'Not Running', 'red');
         }
+    }
+}
+
+sub do_stop {
+    my ($self) = @_;
+
+    # start killing processes from standby
+    my @expected_processes;
+    push @expected_processes, "standby-$_" foreach (1..$self->_num_of_standby);
+    push @expected_processes, "main-$_" foreach (1..$self->_num_of_main);
+
+    NAME:
+    foreach my $name (@expected_processes) {
+        my $pidfile = $self->_build_pid_file($name);
+        my $pid = $self->_read_pid_file($pidfile);
+
+        if ($pid && $self->pid_running($pid)) {
+            foreach my $signal (qw(TERM TERM INT KILL)) {
+                $self->trace("Sending $signal signal to pid $pid...");
+                kill($signal, $pid);
+
+                my $tries = $self->kill_timeout // 0;
+                while ($tries-- && $self->pid_running($pid)) {
+                    sleep 1;
+                }
+
+                last unless $self->pid_running($pid);
+            }
+
+            if ($self->pid_running($pid)) {
+                $self->pretty_print($name, 'Failed to stop', 'red');
+                next NAME;
+            } else {
+                $self->pretty_print($name, 'Stopped');
+            }
+        } else {
+            $self->pretty_print($name, 'Not Running', 'red');
+        }
+
+        $self->_unlink_pid_file($pidfile);
     }
 }
 
@@ -113,9 +153,9 @@ sub do_status {
 #####################################
 sub pid_running {
     my ($self, $pid) = @_;
-    return 0 unless $pid;
-    return 0 if $pid < 1;
-    return kill 0, $pid;
+    my $res = $pid && $pid > 1 ? kill(0, $pid) : 0;
+    $self->trace("pid $pid is " . ($res ? 'running' : 'not running'));
+    return $res;
 }
 
 #####################################
@@ -222,7 +262,7 @@ sub _launch_program {
     $self->_rename_pid_file($self->{pid_file}, $pid_file);
     $self->{pid_file} = $pid_file;
 
-    sleep(10);
+    sleep(20);
     $self->trace('exiting');
 }
 
@@ -267,8 +307,7 @@ sub _rename_pid_file {
 
 sub _unlink_pid_file {
     my ($self, $pid_file) = @_;
-    unlink($pid_file);
-    $self->trace("unlink pid file ($pid_file)");
+    unlink($pid_file) and $self->trace("unlink pid file ($pid_file)");
     return $self;
 }
 
@@ -303,7 +342,6 @@ sub pretty_print {
 
 sub trace {
     my ($self, $message) = @_;
-    return if $self->quiet;
     #print "$$ $message\n";
 }
 
