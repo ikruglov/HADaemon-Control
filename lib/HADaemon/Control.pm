@@ -12,7 +12,7 @@ use Data::Dumper;
 use POSIX qw(_exit setsid);
 
 # Accessor building
-my @accessors = qw( pid pid_dir pid_file quiet color_map name );
+my @accessors = qw( pid_dir quiet color_map name );
 foreach my $method (@accessors) {
     no strict 'refs';
     *$method = sub {
@@ -32,7 +32,7 @@ sub new {
         limit         => $limit,
         limit_options => $limit_options,
         color_map     => { red => 31, green => 32 },
-        quiet         => 1,
+        quiet         => 0,
     }, $class;
 
     foreach my $accessor (@accessors) {
@@ -71,65 +71,46 @@ sub run {
     die "Error: unknown action $called_with. [$allowed_actions]";
 }
 
+#####################################
+# commands
+#####################################
 sub do_start {
     my ($self) = @_;
-
-    my $limit_options = $self->{limit_options};
-    my $num_of_forks = ($limit_options->{max_procs} // 0)
-                     + ($limit_options->{standby_max_procs} // 0);
+    my $num_of_forks = $self->_num_of_main() + $self->_num_of_standby();
 
     for (1..$num_of_forks) {
         my $feedback = $self->_fork() // '';
-        my ($message, $color) = $feedback =~ /^(?:main|standby)$/
-                              ? ("Started - $feedback", 'green')
-                              : ("Started - $feedback", 'green');
-                              #: ('Failed', 'red');
-
-        $self->pretty_print($message, $color);
+        if ($feedback =~ m/^(?:main|standby)-\d+$/) {
+            $self->pretty_print($feedback, 'Started');
+        } else {
+            $self->pretty_print('', 'Failed to start', 'red');
+        }
     }
 }
 
 sub do_status {
     my ($self) = @_;
 
-    my $limit_options = $self->{limit_options};
-    my $num_of_main = $limit_options->{max_procs} // 0;
-    my $num_of_standby = $limit_options->{standby_max_procs} // 0;
-
     my @expected_processes;
-    push @expected_processes, "main-$_" foreach (1..$num_of_main);
-    push @expected_processes, "standby-$_" foreach (1..$num_of_standby);
+    push @expected_processes, "main-$_" foreach (1..$self->_num_of_main);
+    push @expected_processes, "standby-$_" foreach (1..$self->_num_of_standby);
 
     foreach my $name (@expected_processes) {
-        my $pidfile = catfile($self->pid_dir, "$name.pid");
+        my $pidfile = $self->_build_pid_file($name);
         my $pid = $self->_read_pid_file($pidfile);
         my $is_running = $self->pid_running($pid);
 
-        my ($msg, $color) = $is_running
-                            ? ("Running - $name", 'green')
-                            : ("Not running - $name", 'red');
-
-        $self->pretty_print($msg, $color);
+        if ($pid && $is_running) {
+            $self->pretty_print($name, 'Running');
+        } else {
+            $self->pretty_print($name, 'Not Running', 'red');
+        }
     }
 }
 
-sub pretty_print {
-    my ($self, $message, $color) = @_;
-    #return if $self->quiet;
-
-    $color //= "green"; # Green is no color.
-    my $code = $self->color_map->{$color} //= 32; # Green is invalid.
-
-    local $| = 1;
-    printf("%-49s %30s\n", $self->name, "\033[$code" ."m[$message]\033[0m");
-}
-
-sub trace {
-    my ($self, $message) = @_;
-    return if $self->quiet;
-    print "$$ $message\n";
-}
-
+#####################################
+# routines to detect running process
+#####################################
 sub pid_running {
     my ($self, $pid) = @_;
     return 0 unless $pid;
@@ -137,6 +118,9 @@ sub pid_running {
     return kill 0, $pid;
 }
 
+#####################################
+# forking functions
+#####################################
 sub _fork {
     my ($self) = @_;
     my $feedback = '';
@@ -184,9 +168,9 @@ sub _launch_program {
     my ($self, $pipe) = @_;
     $self->trace("_launch_program()");
 
-    $self->pid($$);
-    $self->pid_file(catfile($self->pid_dir, "unknown-$$.pid"));
-    $self->_write_pid_file();
+    my $pid_file = $self->_build_pid_file("unknown-$$");
+    $self->_write_pid_file($pid_file, $$);
+    $self->{pid_file} = $pid_file;
 
     my $limit = $self->{limit};
     my $retiries_classback = $limit->{retries};
@@ -201,8 +185,9 @@ sub _launch_program {
             $self_weak->trace("acquired standby lock $id");
 
             # adjusting name of pidfile
-            my $pid_file = catfile($self_weak->pid_dir, "standby-$id.pid");
-            $self_weak->_rename_pid_file($pid_file);
+            my $pid_file = $self_weak->_build_pid_file("standby-$id");
+            $self_weak->_rename_pid_file($self_weak->{pid_file}, $pid_file);
+            $self_weak->{pid_file} = $pid_file;
 
             # sending feedback that we're in standby mode
             if ($pipe) {
@@ -225,69 +210,109 @@ sub _launch_program {
     }
 
     if (not $id) {
-        $self->_unlink_pid_file();
-        $self->trace("running program FAILED");
+        $self->_unlink_pid_file($self->{pid_file});
+        $self->trace('failed to acquire both locks');
         exit(1); # TODO call callback
     }
 
     $self->trace("acquired main lock id: " . $limit->lock_id());
     
     # now pid file should be 'main-$id'
-    my $pid_file = catfile($self->pid_dir, "main-$id.pid");
-    $self->_rename_pid_file($pid_file);
+    $pid_file = $self->_build_pid_file("main-$id");
+    $self->_rename_pid_file($self->{pid_file}, $pid_file);
+    $self->{pid_file} = $pid_file;
 
-    $self->trace("running program OK");
     sleep(10);
     $self->trace('exiting');
 }
 
+#####################################
+# pid file routines
+#####################################
+sub _build_pid_file {
+    my ($self, $name) = @_;
+    return catfile($self->pid_dir, "$name.pid");
+}
+
 sub _read_pid_file {
     my ($self, $pid_file) = @_;
-    return unless -f $pid_file;
 
-    open(my $fh, "<", $pid_file) or die "Failed to read $pid_file: $!";
-    my $pid = do { local $/; <$fh> };
-    close $fh;
+    my $pid;
+    if (open(my $fh, "<", $pid_file)) {
+        $pid = do { local $/; <$fh> };
+        close($fh);
+    }
 
+    $self->trace("read pid " . ($pid // 'undef') . " from pid file ($pid_file)");
     return $pid;
 }
 
 sub _write_pid_file {
-    my ($self) = @_;
+    my ($self, $pid_file, $pid) = @_;
 
-    open(my $sf, ">", $self->pid_file) or die "Failed to write " . $self->pid_file . ": $!";
-    print $sf $self->pid;
+    open(my $sf, ">", $pid_file) or die "Failed to write $pid_file: $!";
+    print $sf $pid;
     close($sf);
 
-    $self->trace("wrote pid (" . $self->pid . ") to pid file (" . $self->pid_file . ")");
+    $self->trace("wrote pid ($pid) to pid file ($pid_file)");
     return $self;
 }
 
 sub _rename_pid_file {
-    my ($self, $new_pid_file) = @_;
-    return unless $self->pid_file;
-    
-    my $old_pid_file = $self->pid_file;
+    my ($self, $old_pid_file, $new_pid_file) = @_;
     rename($old_pid_file, $new_pid_file) or die "Failed to rename pidfile: $!";
-    $self->pid_file($new_pid_file);
-
     $self->trace("rename pid file ($old_pid_file) to ($new_pid_file)");
     return $self;
 }
 
 sub _unlink_pid_file {
-    my ($self) = @_;
-    return unless $self->pid_file;
-
-    unlink($self->pid_file);
-    $self->trace("unlink pid file (" . $self->pid_file . ")");
+    my ($self, $pid_file) = @_;
+    unlink($pid_file);
+    $self->trace("unlink pid file ($pid_file)");
     return $self;
 }
 
+#####################################
+# pipe routines
+#####################################
 sub _syswrite_with_timeout {
     my ($self, $pipe, $msg) = @_;
     $self->trace("_syswrite($msg)");
     syswrite($pipe, $msg, length($msg));
+}
+
+sub _sysread_with_timeout {
+    my ($self, $pipe, $len) = @_;
+    $self->trace("_sysread($len)");
+}
+
+#####################################
+# misc
+#####################################
+sub pretty_print {
+    my ($self, $process_type, $message, $color) = @_;
+    return if $self->quiet;
+
+    $color //= "green"; # Green is no color.
+    my $code = $self->color_map->{$color} //= 32; # Green is invalid.
+
+    local $| = 1;
+    $process_type =~ s/-/ #/;
+    printf("%s %-40s %40s\n", $self->name, $process_type, "\033[$code" ."m[$message]\033[0m");
+}
+
+sub trace {
+    my ($self, $message) = @_;
+    return if $self->quiet;
+    #print "$$ $message\n";
+}
+
+sub _num_of_main {
+    return shift->{limit_options}->{max_procs} // 0;
+}
+
+sub _num_of_standby {
+    return shift->{limit_options}->{standby_max_procs} // 0;
 }
 
 sub _all_actions {
@@ -295,5 +320,6 @@ sub _all_actions {
     no strict 'refs';
     return map { m/^do_(.+)/ ? $1 : () } keys %{ ref($self) . '::' };
 }
+
 
 1;
