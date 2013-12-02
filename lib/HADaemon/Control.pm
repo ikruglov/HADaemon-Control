@@ -10,7 +10,6 @@ use File::Basename;
 use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
-use Data::Dumper;
 
 # Accessor building
 my @accessors = qw(
@@ -153,11 +152,13 @@ sub do_stop {
             } else {
                 $self->pretty_print($name, 'Stopped');
             }
+
+            my $npid = $self->_read_pid_file($pidfile);
+            if ($npid && $npid == $pid) {
+                $self->_unlink_pid_file($pidfile);
+            }
         } else {
             $self->pretty_print($name, 'Not Running', 'red');
-        }
-
-        if ($pid == $self->_read_pid_file($pidfile)) {
             $self->_unlink_pid_file($pidfile);
         }
     }
@@ -169,8 +170,10 @@ sub do_restart {
     return 1;
 }
 
-sub do_full_restart {
-    return 1;
+sub do_hard_restart {
+    my ($self) = @_;
+    $self->do_stop();
+    return $self->do_start();
 }
 
 sub do_spawn {
