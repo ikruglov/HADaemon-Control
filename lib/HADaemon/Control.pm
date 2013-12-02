@@ -6,13 +6,17 @@ use warnings;
 use File::Spec;
 use File::Spec::Functions;
 use File::Basename;
+use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
 use Data::Dumper;
 use POSIX qw(_exit setsid);
 
 # Accessor building
-my @accessors = qw( pid_dir quiet color_map name kill_timeout );
+my @accessors = qw(
+    pid_dir quiet color_map name kill_timeout program program_args
+);
+
 foreach my $method (@accessors) {
     no strict 'refs';
     *$method = sub {
@@ -52,7 +56,8 @@ sub run {
     my ($self) = @_;
 
     # Error Checking.
-    #$self->program or die "Error: program must be defined";
+    $self->program && ref $self->program eq 'CODE'
+        or die "Error: program must be defined and must be coderef";
     $self->name
         or die "Error: name must be defined";
     $self->pid_dir
@@ -67,7 +72,7 @@ sub run {
 
     my $action = "do_$called_with";
     $self->can($action)
-        and exit($self->$action() // 1);
+        and exit($self->$action() // 0);
 
     die "Error: unknown action $called_with. [$allowed_actions]";
 }
@@ -77,16 +82,21 @@ sub run {
 #####################################
 sub do_start {
     my ($self) = @_;
-    my $num_of_forks = $self->_num_of_main() + $self->_num_of_standby();
 
-    for (1..$num_of_forks) {
+    $self->_create_dir($self->pid_dir);
+
+    my $exit_code = 0;
+    for (1..$self->_num_of_main + $self->_num_of_standby) {
         my $feedback = $self->_fork() // '';
         if ($feedback =~ m/^(?:main|standby)-\d+$/) {
             $self->pretty_print($feedback, 'Started');
         } else {
             $self->pretty_print('', 'Failed to start', 'red');
+            $exit_code = 1;
         }
     }
+
+    return $exit_code;
 }
 
 sub do_status {
@@ -110,6 +120,7 @@ sub do_status {
 
 sub do_stop {
     my ($self) = @_;
+    my $exit_code = 0;
 
     # start killing processes from standby
     my @expected_processes;
@@ -136,6 +147,7 @@ sub do_stop {
 
             if ($self->pid_running($pid)) {
                 $self->pretty_print($name, 'Failed to stop', 'red');
+                $exit_code = 1;
                 next NAME;
             } else {
                 $self->pretty_print($name, 'Stopped');
@@ -146,6 +158,8 @@ sub do_stop {
 
         $self->_unlink_pid_file($pidfile);
     }
+
+    return $exit_code;
 }
 
 #####################################
@@ -180,7 +194,8 @@ sub _fork {
         $new_pid and $self->trace("forked $new_pid");
 
         if ($new_pid == 0) { # Our double fork.
-            $self->_launch_program($pwrite);
+            my $res = $self->_launch_program($pwrite);
+            exit($res // 0);
         } elsif (not defined $new_pid) {
             warn "Cannot fork: $!";
             _exit 1;
@@ -252,7 +267,7 @@ sub _launch_program {
     if (not $id) {
         $self->_unlink_pid_file($self->{pid_file});
         $self->trace('failed to acquire both locks');
-        exit(1); # TODO call callback
+        return 1; # TODO call callback or maybe pass it $self->program
     }
 
     $self->trace("acquired main lock id: " . $limit->lock_id());
@@ -262,12 +277,13 @@ sub _launch_program {
     $self->_rename_pid_file($self->{pid_file}, $pid_file);
     $self->{pid_file} = $pid_file;
 
-    sleep(20);
-    $self->trace('exiting');
+    my @args = @{ $self->program_args // [] };
+    my $res = $self->program->($self, @args);
+    return $res // 0;
 }
 
 #####################################
-# pid file routines
+# pid file and file routines
 #####################################
 sub _build_pid_file {
     my ($self, $name) = @_;
@@ -309,6 +325,17 @@ sub _unlink_pid_file {
     my ($self, $pid_file) = @_;
     unlink($pid_file) and $self->trace("unlink pid file ($pid_file)");
     return $self;
+}
+
+sub _create_dir {
+    my ($self, $dir) = @_;
+    if (-d $dir) {
+        $self->trace("Dir exists ($dir) - no need to create");
+    } else {
+        make_path($dir, { error => \my $errors });
+        @$errors and die "error TODO"; # TODO
+        $self->trace("Created dir ($dir)");
+    }
 }
 
 #####################################
@@ -358,6 +385,5 @@ sub _all_actions {
     no strict 'refs';
     return map { m/^do_(.+)/ ? $1 : () } keys %{ ref($self) . '::' };
 }
-
 
 1;

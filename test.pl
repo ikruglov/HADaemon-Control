@@ -7,6 +7,7 @@ use HADaemon::Control;
 HADaemon::Control->new({
     name => 'test.pl',
     pid_dir => '/tmp/test',
+    program => sub { sleep 20 },
     limit_options => {
         max_procs => 1,
         standby_max_procs => 2,
