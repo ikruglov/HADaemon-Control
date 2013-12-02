@@ -3,6 +3,7 @@ package HADaemon::Control;
 use strict;
 use warnings;
 
+use POSIX;
 use File::Spec;
 use File::Spec::Functions;
 use File::Basename;
@@ -10,11 +11,11 @@ use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
 use Data::Dumper;
-use POSIX qw(_exit setsid);
 
 # Accessor building
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
+    stdout_file stderr_file umask directory
 );
 
 foreach my $method (@accessors) {
@@ -86,7 +87,7 @@ sub do_start {
     $self->_create_dir($self->pid_dir);
 
     my $exit_code = 0;
-    for (1..$self->_num_of_main + $self->_num_of_standby) {
+    for (1 .. $self->_num_of_main + $self->_num_of_standby) {
         my $feedback = $self->_fork() // '';
         if ($feedback =~ m/^(?:main|standby)-\d+$/) {
             $self->pretty_print($feedback, 'Started');
@@ -156,10 +157,24 @@ sub do_stop {
             $self->pretty_print($name, 'Not Running', 'red');
         }
 
-        $self->_unlink_pid_file($pidfile);
+        if ($pid == $self->_read_pid_file($pidfile)) {
+            $self->_unlink_pid_file($pidfile);
+        }
     }
 
     return $exit_code;
+}
+
+sub do_restart {
+    return 1;
+}
+
+sub do_full_restart {
+    return 1;
+}
+
+sub do_spawn {
+    return 0;
 }
 
 #####################################
@@ -188,20 +203,40 @@ sub _fork {
 
     if ($pid == 0) { # Child, launch the process here
         close($pread); # Close reading end of pipe
-        setsid(); # Become the process leader
+        POSIX::setsid(); # Become the process leader
 
         my $new_pid = fork();
         $new_pid and $self->trace("forked $new_pid");
 
         if ($new_pid == 0) { # Our double fork.
+            # close all file handlers
+            my $pwrite_fd = fileno($pwrite);
+            my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
+            $max_fd = 64 if !defined $max_fd or $max_fd < 0;
+            POSIX::close($_) foreach grep { $_ != $pwrite_fd } (3 .. $max_fd);
+
+            # reopening STDIN and redirecting STDOUT and STDERR
+            open(STDIN, "<", File::Spec->devnull);
+            $self->_redirect_filehandles();
+
+            if ($self->umask) {
+                umask($self->umask);
+                $self->trace("umask(" . $self->umask . ")");
+            }
+
+            if ($self->directory) {
+                chdir($self->directory);
+                $self->trace("chdir(" . $self->directory . ")");
+            }
+
             my $res = $self->_launch_program($pwrite);
             exit($res // 0);
         } elsif (not defined $new_pid) {
             warn "Cannot fork: $!";
-            _exit 1;
+            POSIX::_exit(1);
+        } else {
+            POSIX::_exit(0);
         }
-
-        _exit 0;
     } elsif (not defined $pid) { # We couldn't fork =(
         die "Cannot fork: $!";
     } else { # In the parent, $pid = child's PID, return it
@@ -217,6 +252,26 @@ sub _fork {
 
     $self->trace("got feedback: $feedback");
     return $feedback;
+}
+
+sub _redirect_filehandles {
+    my ($self) = @_;
+
+    if ($self->stdout_file) {
+        my $file = $self->stdout_file;
+        $file = $file eq '/dev/null' ? File::Spec->devnull : $file;
+        open(STDOUT, '>>', $file)
+            or die "Failed to open STDOUT to $file: $!";
+        $self->trace("STDOUT redirected to $file");
+    }
+
+    if ($self->stderr_file) {
+        my $file = $self->stderr_file;
+        $file = $file eq '/dev/null' ? File::Spec->devnull : $file;
+        open(STDERR, '>>', $file)
+            or die "Failed to open STDERR to $file: $!";
+        $self->trace("STDERR redirected to $file");
+    }
 }
 
 sub _launch_program {
@@ -299,7 +354,7 @@ sub _read_pid_file {
         close($fh);
     }
 
-    $self->trace("read pid " . ($pid // 'undef') . " from pid file ($pid_file)");
+    $self->trace("read pid " . ($pid // "'undef'") . " from pid file ($pid_file)");
     return $pid;
 }
 
@@ -369,7 +424,10 @@ sub pretty_print {
 
 sub trace {
     my ($self, $message) = @_;
-    #print "$$ $message\n";
+    return unless $ENV{DC_TRACE};
+
+    print "[TRACE] $message\n" if $ENV{DC_TRACE} == 1;
+    print STDERR "[TRACE] $message\n" if $ENV{DC_TRACE} == 2;
 }
 
 sub _num_of_main {
