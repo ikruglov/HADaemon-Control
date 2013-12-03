@@ -133,7 +133,7 @@ sub do_stop {
     # start killing processes from standby
 
     NAME:
-    foreach my $type ($self->_expected_process_types('reversed')) {
+    foreach my $type (reverse $self->_expected_process_types()) {
         my $pidfile = $self->_build_pid_file($type);
         my $pid = $self->_read_pid_file($pidfile);
 
@@ -451,13 +451,13 @@ sub _all_actions {
 }
 
 sub _expected_process_types {
-    my ($self, $reversed) = @_;
+    my ($self) = @_;
 
     my @expected;
     push @expected, "main-$_" foreach (1..$self->_num_of_main);
     push @expected, "standby-$_" foreach (1..$self->_num_of_standby);
 
-    return $reversed ? reverse @expected : @expected;
+    return @expected;
 }
 
 1;
