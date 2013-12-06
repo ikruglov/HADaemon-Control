@@ -467,14 +467,11 @@ sub _write_file {
     close($fh);
 
     $self->trace("wrote '$content' to file ($file)");
-    return $self;
 }
 
 sub _rename_file {
     my ($self, $old_file, $new_file) = @_;
-    rename($old_file, $new_file) or die "Failed to rename file: $!";
-    $self->trace("rename pid file ($old_file) to ($new_file)");
-    return $self;
+    rename($old_file, $new_file) and $self->trace("rename pid file ($old_file) to ($new_file)");
 }
 
 sub _unlink_file {
