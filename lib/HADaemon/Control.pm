@@ -66,7 +66,10 @@ sub run {
     $self->standby_stop_file
         or $self->standby_stop_file(catfile($self->pid_dir, 'standby-stop-file'));
 
-    $self->{interval} = int($self->{ipc_cl_options}->{interval} // 0) + 3;
+    $self->{ipc_cl_options}->{path}
+        or $self->{ipc_cl_options}->{path} = catdir($self->pid_dir, 'lock');
+    $self->{ipc_cl_options}->{standby_path}
+        or $self->{ipc_cl_options}->{standby_path} = catdir($self->pid_dir, 'lock-standby');
 
     my $called_with = $ARGV[0] // '';
     $called_with =~ s/^[-]+//g;
@@ -237,7 +240,7 @@ sub _fork_mains {
         last unless $to_start;
 
         $self->_fork() foreach (1 .. $to_start);
-        sleep($self->{interval});
+        sleep($self->_sleep_interval);
     }
 
     return $self->_main_running() == $expected_main;
@@ -252,7 +255,7 @@ sub _fork_standbys {
         last unless $to_start;
 
         $self->_fork() foreach (1 .. $to_start);
-        sleep($self->{interval});
+        sleep($self->_sleep_interval);
     }
 
     return $self->_standby_running() == $expected_standby;
@@ -540,6 +543,10 @@ sub _expected_processes {
         $self->_expected_standby_processes(),
     );
     return wantarray ? @expected : scalar @expected;
+}
+
+sub _sleep_interval {
+    return int(shift->{ipc_cl_options}->{interval} // 0) + 3;
 }
 
 1;
