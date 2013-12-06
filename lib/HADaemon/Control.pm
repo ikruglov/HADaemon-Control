@@ -15,6 +15,7 @@ use IPC::ConcurrencyLimit::WithStandby;
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory limit_options
+    stop_file standby_stop_file
 );
 
 foreach my $method (@accessors) {
@@ -58,6 +59,15 @@ sub run {
     $self->pid_dir
         or die "Error: pid_dir must be defined";
 
+    $self->_create_dir($self->pid_dir);
+
+    if ($self->stop_file) {
+        # TODO
+    } else {
+        $self->stop_file(catfile($self->pid_dir, 'stop-file'));
+        $self->standby_stop_file(catfile($self->pid_dir, 'stop-file-standby'));
+    }
+
     my $called_with = $ARGV[0] // '';
     $called_with =~ s/^[-]+//g;
 
@@ -77,47 +87,30 @@ sub run {
 #####################################
 sub do_start {
     my ($self) = @_;
-    my $exit_code = 0;
 
-    my $pid_dir = $self->pid_dir;
-    $self->_create_dir($pid_dir);
+    $self->_unlink_file($self->stop_file);
+    $self->_unlink_file($self->standby_stop_file);
 
-    my $interval = $self->{limit}->{interval} // 1;
-    $interval = ($interval > 1 ? $interval : 1);
+    my $started = 0;
+    my $expected = $self->_expected_processes();
 
-    FORK:
-    for (1 .. $self->_num_of_main + $self->_num_of_standby) {
-        my $pid = $self->_fork();
-        if (not $pid || !$self->_pid_running($pid)) {
-            $self->pretty_print('', 'Failed to start', 'red');
-            $exit_code = 1;
-            next;
-        }
-
-        for (1..2) {
-            foreach my $type ($self->_expected_process_types()) {
-                my $pidfile = $self->_build_pid_file($type);
-                my $test_pid = $self->_read_pid_file($pidfile);
-                if ($test_pid && $test_pid eq $pid) {
-                    $self->pretty_print($type, 'Started');
-                    next FORK;
-                }
-            }
-
-            sleep($interval);
-        }
-
-        $self->pretty_print('', 'Unknown', 'red');
-        print "Process started but failed to detect its type. Probably another instance is running or not enough permissions\n";
-        $exit_code = 1;
+    foreach (1 .. $expected) {
+        $self->_fork() == 0 and ++$started;
     }
 
-    return $exit_code;
+    if ($started == $expected) {
+        $self->pretty_print('', "Started $started/$expected");
+        return 0;
+    }
+
+    $self->pretty_print('', 'Failed', 'red');
+    print "Started $started out of $expected processes\n";
+    return 1;
 }
 
 sub do_status {
     my ($self) = @_;
-    foreach my $type ($self->_expected_process_types()) {
+    foreach my $type ($self->_expected_processes()) {
         if ($self->_process_type_is_running($type)) {
             $self->pretty_print($type, 'Running');
         } else {
@@ -126,40 +119,149 @@ sub do_status {
     }
 }
 
-sub do_stop {
+sub _main_running {
+    my ($self) = @_;
+}
+
+sub _standby_running {
+    my ($self) = @_;
+    my @running = grep { $self->_process_type_is_running($_) } $self->_expected_standby_processes();
+    return wantarray ? @running : scalar @running;
+}
+
+sub do_restart {
     my ($self) = @_;
     my $exit_code = 0;
 
-    # start killing processes from standby
+    # stoping standby
+    $self->_write_file($self->standby_stop_file);
 
-    NAME:
-    foreach my $type (reverse $self->_expected_process_types()) {
-        my $pidfile = $self->_build_pid_file($type);
-        my $pid = $self->_read_pid_file($pidfile);
+    my $sleep_interval = 3;
+    my @expected_standby = $self->_expected_standby_processes();
 
-        if ($pid && $self->_pid_running($pid)) {
-            if ($self->_kill_pid($pid)) {
-                $self->pretty_print($type, 'Stopped');
-            } else {
-                $self->pretty_print($type, 'Failed to stop', 'red');
-                $exit_code = 1;
-                next NAME;
+    for (1 .. $sleep_interval) {
+        last if $self->_standby_running() == 0;
+        sleep(1);
+    }
+
+    if ($self->_standby_running() != 0) {
+        $self->pretty_print('stopping standby', 'Failed', 'red');
+        return 1;
+    }
+
+    $self->pretty_print('stopping standby', 'OK');
+
+    # starting standby
+    $self->_unlink_file($self->standby_stop_file);
+
+    for (1..10) {
+        my @running_standby = $self->_standby_running();
+        my $to_start = scalar @expected_standby - scalar @running_standby;
+        last unless $to_start;
+
+        $self->_fork() foreach (1 .. $to_start);
+        sleep($sleep_interval);
+    }
+
+    if ($self->_standby_running != scalar @expected_standby) {
+        $self->pretty_print('starting standby', 'Failed', 'red');
+        return 1; 
+    }
+
+    $self->pretty_print('starting standby', 'OK');
+
+    # restarting main
+    my @expected_main = $self->_expected_main_processes();
+    my %main_pids = map { $_ => $self->_process_type_is_running($_) } @expected_main;
+
+    foreach my $type (@expected_main) {
+        my $pid = $self->_process_type_is_running($type);
+        if ($self->_kill_pid($pid)) {
+            # waiting for promotion of one of standbys
+            my $new_pid = 0;
+            for (1..10) {
+                $new_pid = $self->_process_type_is_running($type); 
+                last if $new_pid;
+                sleep(1);
             }
 
-            my $npid = $self->_read_pid_file($pidfile);
-            if ($npid && $npid == $pid) {
-                $self->_unlink_pid_file($pidfile);
+            if (not $new_pid) {
+                $self->pretty_print($type, 'Failed to promote standby', 'red');
+            } elsif ($new_pid == $pid) {
+                $self->pretty_print($type, 'Failed to restart', 'red');
+            } else {
+                $self->pretty_print($type, 'Restarted');
             }
         } else {
-            $self->pretty_print($type, 'Not Running', 'red');
-            $self->_unlink_pid_file($pidfile);
+            $self->pretty_print($type, 'Failed to stop', 'red');
         }
     }
+
+    # starting standbys again
+    for (1..10) {
+        my @running_standby = $self->_standby_running();
+        my $to_start = scalar @expected_standby - scalar @running_standby;
+        last unless $to_start;
+
+        $self->_fork() foreach (1 .. $to_start);
+        sleep($sleep_interval);
+    }
+
+    if ($self->_standby_running == scalar @expected_standby) {
+        $self->pretty_print('starting standby', 'OK');
+    }
+    
+    # starting new standby
+    print "\nSTATUS REPORT\n";
+    $self->do_status();
+    return 0;
+
+    # start killing processes from standby
+
+#    NAME:
+#    foreach my $type (reverse $self->_expected_processes()) {
+#        my $pidfile = $self->_build_pid_file($type);
+#        my $pid = $self->_read_pid_file($pidfile);
+#
+#        if ($pid && $self->_pid_running($pid)) {
+#            if ($self->_kill_pid($pid)) {
+#                $self->pretty_print($type, 'Stopped');
+#            } else {
+#                $self->pretty_print($type, 'Failed to stop', 'red');
+#                $exit_code = 1;
+#                next NAME;
+#            }
+#
+#            my $npid = $self->_read_pid_file($pidfile);
+#            if ($npid && $npid == $pid) {
+#                $self->_unlink_file($pidfile);
+#            }
+#        } else {
+#            $self->pretty_print($type, 'Not Running', 'red');
+#            $self->_unlink_file($pidfile);
+#        }
+#    }
 
     return $exit_code;
 }
 
-sub do_restart {
+#sub do_restart {
+#    my ($self) = @_;
+#
+#    my @standby = map { "standby-$_" } 1 .. $self->_num_of_standby;
+#
+#    foreach my $type (@standby) {
+#        my $pidfile = $self->_build_pid_file($type);
+#        my $pid = $self->_read_pid_file($pidfile);
+#
+#        if ($pid && $self->_pid_running($pid)) {
+#        } else {
+#            $self->pretty_print($type, 'Not Running', 'red');
+#        }
+#    }
+#}
+
+sub do_hard_restart {
     my ($self) = @_;
     $self->do_stop();
     return $self->do_start();
@@ -167,7 +269,9 @@ sub do_restart {
 
 sub do_spawn {
     my ($self) = @_;
-    foreach my $type ($self->_expected_process_types()) {
+
+    $self->_fork(); # always spawn at least one new process
+    foreach my $type ($self->_expected_processes()) {
         $self->_process_type_is_running($type)
             or $self->_fork();
     }
@@ -185,11 +289,12 @@ sub _pid_running {
     return $res;
 }
 
+# rename is pid_of_process_type
 sub _process_type_is_running {
     my ($self, $type) = @_;
 
     my $pidfile = $self->_build_pid_file($type);
-    my $pid = $self->_read_pid_file($pidfile);
+    my $pid = $self->_read_file($pidfile);
     return $pid && $self->_pid_running($pid) ? $pid : undef;
 }
 
@@ -216,17 +321,12 @@ sub _kill_pid {
 #####################################
 sub _fork {
     my ($self) = @_;
-    my $real_pid = ''; #pid of second fork
     $self->trace("_double_fork()");
-
-    my ($pread, $pwrite);
-    pipe($pread, $pwrite) or die "Cannot open a pipe: $!";
 
     my $pid = fork();
     $pid and $self->trace("forked $pid");
 
     if ($pid == 0) { # Child, launch the process here
-        close($pread); # Close reading end of pipe
         POSIX::setsid(); # Become the process leader
 
         my $pid2 = fork();
@@ -234,7 +334,6 @@ sub _fork {
 
         if ($pid2 == 0) { # Our double fork.
             # close all file handlers
-            # XXX if remove this block please don't forget to close $pwrite
             my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
             $max_fd = 64 if !defined $max_fd or $max_fd < 0;
             POSIX::close($_) foreach (3 .. $max_fd);
@@ -260,25 +359,18 @@ sub _fork {
             warn "Cannot fork: $!";
             POSIX::_exit(1);
         } else {
-            # send pid2 to initial parent
-            syswrite($pwrite, $pid2);
             POSIX::_exit(0);
         }
     } elsif (not defined $pid) { # We couldn't fork =(
         die "Cannot fork: $!";
-    } else { # In the parent, $pid = child's PID, return it
-        close($pwrite); # Close writting end of pipe
-
-        $self->trace("sysread()");
-        sysread($pread, $real_pid, 16); # Read answer, block here
-        close($pread);
-
-        $self->trace("waitpid()");
-        waitpid($pid, 0); # Wait until first kid terminates
     }
 
-    $self->trace("got real pid: $real_pid");
-    return $real_pid;
+    # Wait until first kid terminates
+    $self->trace("waitpid()");
+    waitpid($pid, 0) == $pid or die "waitpid() failed: $!";
+    return POSIX::WIFEXITED(${^CHILD_ERROR_NATIVE})
+           ? POSIX::WEXITSTATUS(${^CHILD_ERROR_NATIVE})
+           : 1;
 }
 
 sub _redirect_filehandles {
@@ -306,7 +398,7 @@ sub _launch_program {
     $self->trace("_launch_program()");
 
     my $pid_file = $self->_build_pid_file("unknown-$$");
-    $self->_write_pid_file($pid_file, $$);
+    $self->_write_file($pid_file, $$);
     $self->{pid_file} = $pid_file;
 
     my $limit = IPC::ConcurrencyLimit::WithStandby->new(%{ $self->limit_options });
@@ -318,20 +410,17 @@ sub _launch_program {
         $retries_classback = sub { return $_[0] != $max_retries + 1 };
     }
 
-    my $first_callback_run = 1;
     my $limit_weak = $limit;
     weaken($limit_weak);
 
     $limit->{retries} = sub {
-        if ($first_callback_run) {
-            $first_callback_run = 0;
-
+        if ($_[0] == 1) { # run code on first attempt
             my $id = $limit_weak->{standby_lock}->lock_id();
             $self->trace("acquired standby lock $id");
 
             # adjusting name of pidfile
             my $pid_file = $self->_build_pid_file("standby-$id");
-            $self->_rename_pid_file($self->{pid_file}, $pid_file);
+            $self->_rename_file($self->{pid_file}, $pid_file);
             $self->{pid_file} = $pid_file;
         }
 
@@ -340,7 +429,7 @@ sub _launch_program {
 
     my $id = $limit->get_lock();
     if (not $id) {
-        $self->_unlink_pid_file($self->{pid_file});
+        $self->_unlink_file($self->{pid_file});
         $self->trace('failed to acquire both locks');
         return 1; # TODO call callback or maybe pass it $self->program
     }
@@ -349,7 +438,7 @@ sub _launch_program {
     
     # now pid file should be 'main-$id'
     $pid_file = $self->_build_pid_file("main-$id");
-    $self->_rename_pid_file($self->{pid_file}, $pid_file);
+    $self->_rename_file($self->{pid_file}, $pid_file);
     $self->{pid_file} = $pid_file;
 
     my @args = @{ $self->program_args // [] };
@@ -358,48 +447,47 @@ sub _launch_program {
 }
 
 #####################################
-# pid file and file routines
+# file routines
 #####################################
 sub _build_pid_file {
     my ($self, $type) = @_;
     return catfile($self->pid_dir, "$type.pid");
 }
 
-sub _read_pid_file {
-    my ($self, $pid_file) = @_;
+sub _read_file {
+    my ($self, $file) = @_;
+    return undef unless -f $file;
 
-    my $pid;
-    if (open(my $fh, "<", $pid_file)) {
-        $pid = do { local $/; <$fh> };
-        close($fh);
-    }
+    open(my $fh, "<", $file) or die "Failed to read $file: $!";
+    my $content = do { local $/; <$fh> };
+    close($fh);
 
-    $self->trace("read pid " . ($pid // "'undef'") . " from pid file ($pid_file)");
-    return $pid;
+    $self->trace("read '$content' from file ($file)");
+    return $content;
 }
 
-sub _write_pid_file {
-    my ($self, $pid_file, $pid) = @_;
+sub _write_file {
+    my ($self, $file, $content) = @_;
+    $content //= '';
 
-    open(my $sf, ">", $pid_file) or die "Failed to write $pid_file: $!";
-    print $sf $pid;
-    close($sf);
+    open(my $fh, ">", $file) or die "Failed to write $file: $!";
+    print $fh $content;
+    close($fh);
 
-    $self->trace("wrote pid ($pid) to pid file ($pid_file)");
+    $self->trace("wrote '$content' to file ($file)");
     return $self;
 }
 
-sub _rename_pid_file {
-    my ($self, $old_pid_file, $new_pid_file) = @_;
-    rename($old_pid_file, $new_pid_file) or die "Failed to rename pidfile: $!";
-    $self->trace("rename pid file ($old_pid_file) to ($new_pid_file)");
+sub _rename_file {
+    my ($self, $old_file, $new_file) = @_;
+    rename($old_file, $new_file) or die "Failed to rename file: $!";
+    $self->trace("rename pid file ($old_file) to ($new_file)");
     return $self;
 }
 
-sub _unlink_pid_file {
-    my ($self, $pid_file) = @_;
-    unlink($pid_file) and $self->trace("unlink pid file ($pid_file)");
-    return $self;
+sub _unlink_file {
+    my ($self, $file) = @_;
+    unlink($file) and $self->trace("unlink file ($file)");
 }
 
 sub _create_dir {
@@ -432,16 +520,8 @@ sub trace {
     my ($self, $message) = @_;
     return unless $ENV{DC_TRACE};
 
-    print "[TRACE] $message\n" if $ENV{DC_TRACE} == 1;
-    print STDERR "[TRACE] $message\n" if $ENV{DC_TRACE} == 2;
-}
-
-sub _num_of_main {
-    return shift->{limit_options}->{max_procs} // 0;
-}
-
-sub _num_of_standby {
-    return shift->{limit_options}->{standby_max_procs} // 0;
+    print "$$ [TRACE] $message\n" if $ENV{DC_TRACE} == 1;
+    print STDERR "$$ [TRACE] $message\n" if $ENV{DC_TRACE} == 2;
 }
 
 sub _all_actions {
@@ -450,14 +530,27 @@ sub _all_actions {
     return map { m/^do_(.+)/ ? $1 : () } keys %{ ref($self) . '::' };
 }
 
-sub _expected_process_types {
+sub _expected_main_processes {
     my ($self) = @_;
+    my $num = $self->{limit_options}->{max_procs} // 0;
+    my @expected = map { "main-$_" } ( 1 .. $num );
+    return wantarray ? @expected : scalar @expected;
+}
 
-    my @expected;
-    push @expected, "main-$_" foreach (1..$self->_num_of_main);
-    push @expected, "standby-$_" foreach (1..$self->_num_of_standby);
+sub _expected_standby_processes {
+    my ($self) = @_;
+    my $num = $self->{limit_options}->{standby_max_procs} // 0;
+    my @expected = map { "standby-$_" } ( 1 .. $num );
+    return wantarray ? @expected : scalar @expected;
+}
 
-    return @expected;
+sub _expected_processes {
+    my ($self) = @_;
+    my @expected = (
+        $self->_expected_main_processes(),
+        $self->_expected_standby_processes(),
+    );
+    return wantarray ? @expected : scalar @expected;
 }
 
 1;

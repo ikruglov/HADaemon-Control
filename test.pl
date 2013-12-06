@@ -13,6 +13,7 @@ HADaemon::Control->new({
         standby_max_procs => 2,
         path => '/tmp/test/lock',
         standby_path => '/tmp/test/lock-standby',
+        retries => sub { 1 },
     },
 })->run();
 
