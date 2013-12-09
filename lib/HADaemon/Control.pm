@@ -563,3 +563,117 @@ sub _sleep_interval {
 }
 
 1;
+
+__END__
+
+=encoding utf8
+
+=head1 NAME
+
+HADaemon::Control - Create init scripts for Perl high-available (HA) daemons
+
+=head1 DESCRIPTION
+
+HADaemon::Control provides a library for creating init scripts for HA daemons in perl.
+The library takes idea and interface from Daemon::Control and combine them
+with facilities of IPC::ConcurrencyLimit::WithStandby.
+
+While creating the module I was aiming to achieve four goals:
+
+=over 4
+
+=item * starting/stopping/restarting HA daemon with one command
+
+=item * have a clear way of getting status of daemon's processes
+
+=item * minimize downtime during a restart
+
+=item * ability to run module as a cronjob to fork new processes
+
+=back
+
+=head1 SYNOPSIS
+
+=head1 CONSTRUCTOR
+
+The constructor takes the following arguments.
+
+=head2 name
+
+The name of the program the daemon is controlling.  This will be used in
+status messages "name [Started]"
+
+=head2 program
+
+This should be a coderef of actual programm to run.
+
+    $daemon->program( sub { ... } );
+
+=head2 program_args
+
+This is an array ref of the arguments for the program.
+
+=head1 METHODS
+
+=head2 do_start
+
+Is called when start is given as an argument.  Starts the forking and
+exits. Called by:
+
+    /usr/bin/my_program_launcher.pl start
+
+=head2 do_stop
+
+Is called when stop is given as an argument.  Stops the running program
+if it can. Called by:
+
+        /usr/bin/my_program_launcher.pl stop
+
+=head2 do_restart
+
+Is called when restart is given as an argument.  Calls do_stop and do_start.
+Called by:
+
+    /usr/bin/my_program_launcher.pl restart
+
+=head2 do_reload
+
+Is called when reload is given as an argument.  Sends a HUP signal to the
+daemon.
+
+    /usr/bin/my_program_launcher.pl reload
+
+=head2 do_status
+
+Is called when status is given as an argument.  Displays the status of the
+program, basic on the PID file. Called by:
+
+    /usr/bin/my_program_launcher.pl status
+
+=head1 AUTHOR
+
+Ivan Kruglov, C<ivan.kruglov@yahoo.com>
+
+=head1 ACKNOWLEDGMENT
+
+This module was inspired from module Daemon::Control.
+
+This module was originally developed for Booking.com.
+With approval from Booking.com, this module was generalized
+and put on CPAN, for which the authors would like to express
+their gratitude.
+
+=head1 COPYRIGHT AND LICENSE
+
+(C) 2013 Ivan Kruglov. All rights reserved.
+
+This code is available under the same license as Perl version
+5.8.1 or higher.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+=head2 AVAILABILITY
+
+The most current version of HADaemon::Control can be found at L<https://github.com/ikruglov/HADaemon-Control>
