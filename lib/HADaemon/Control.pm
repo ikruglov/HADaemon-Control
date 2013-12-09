@@ -61,8 +61,6 @@ sub run {
     $self->pid_dir
         or die "Error: pid_dir must be defined\n";
 
-    $self->_create_dir($self->pid_dir);
-
     $self->standby_stop_file
         or $self->standby_stop_file(catfile($self->pid_dir, 'standby-stop-file'));
 
@@ -79,8 +77,10 @@ sub run {
         or die "Must be called with an action: [$allowed_actions]\n";
 
     my $action = "do_$called_with";
-    $self->can($action)
-        and exit($self->$action() // 0);
+    if ($self->can($action)) {
+        $self->_create_dir($self->pid_dir);
+        exit($self->$action() // 0);
+    }
 
     die "Error: unknown action $called_with. [$allowed_actions]\n";
 }
@@ -235,12 +235,14 @@ sub _fork_mains {
     my ($self) = @_;
     my $expected_main = $self->_expected_main_processes();
 
-    for (1..10) {
+    for (1..3) {
         my $to_start = $expected_main - $self->_main_running();
-        last unless $to_start;
-
         $self->_fork() foreach (1 .. $to_start);
-        sleep($self->_sleep_interval);
+
+        for (1 .. $self->_sleep_interval) {
+            last if $self->_main_running() == $expected_main;
+            sleep(1);
+        }
     }
 
     return $self->_main_running() == $expected_main;
@@ -250,12 +252,14 @@ sub _fork_standbys {
     my ($self) = @_;
     my $expected_standby = $self->_expected_standby_processes();
 
-    for (1..10) {
+    for (1..3) {
         my $to_start = $expected_standby - $self->_standby_running();
-        last unless $to_start;
-
         $self->_fork() foreach (1 .. $to_start);
-        sleep($self->_sleep_interval);
+
+        for (1 .. $self->_sleep_interval) {
+            last if $self->_standby_running() == $expected_standby;
+            sleep(1);
+        }
     }
 
     return $self->_standby_running() == $expected_standby;
@@ -280,7 +284,6 @@ sub _pid_running {
     return $res;
 }
 
-# rename is pid_of_process_type
 sub _pid_of_process_type {
     my ($self, $type) = @_;
     my $pidfile = $self->_build_pid_file($type);
@@ -306,9 +309,6 @@ sub _kill_pid {
     return 0;
 }
 
-#####################################
-# forking functions
-#####################################
 sub _fork {
     my ($self) = @_;
     $self->trace("_double_fork()");
@@ -342,7 +342,6 @@ sub _fork {
                 $self->trace("chdir(" . $self->directory . ")");
             }
 
-            # TODO add eval
             my $res = $self->_launch_program();
             exit($res // 0);
         } elsif (not defined $pid2) {
@@ -352,15 +351,12 @@ sub _fork {
             POSIX::_exit(0);
         }
     } elsif (not defined $pid) { # We couldn't fork =(
-        die "Cannot fork: $!";
+        warn "Cannot fork: $!";
+    } else {
+        # Wait until first kid terminates
+        $self->trace("waitpid()");
+        waitpid($pid, 0);
     }
-
-    # Wait until first kid terminates
-    $self->trace("waitpid()");
-    waitpid($pid, 0) == $pid or die "waitpid() failed: $!";
-    return POSIX::WIFEXITED(${^CHILD_ERROR_NATIVE})
-           ? POSIX::WEXITSTATUS(${^CHILD_ERROR_NATIVE})
-           : 1;
 }
 
 sub _redirect_filehandles {
@@ -369,16 +365,14 @@ sub _redirect_filehandles {
     if ($self->stdout_file) {
         my $file = $self->stdout_file;
         $file = $file eq '/dev/null' ? File::Spec->devnull : $file;
-        open(STDOUT, '>>', $file)
-            or die "Failed to open STDOUT to $file: $!";
+        open(STDOUT, '>>', $file) or die "Failed to open STDOUT to $file: $!";
         $self->trace("STDOUT redirected to $file");
     }
 
     if ($self->stderr_file) {
         my $file = $self->stderr_file;
         $file = $file eq '/dev/null' ? File::Spec->devnull : $file;
-        open(STDERR, '>>', $file)
-            or die "Failed to open STDERR to $file: $!";
+        open(STDERR, '>>', $file) or die "Failed to open STDERR to $file: $!";
         $self->trace("STDERR redirected to $file");
     }
 }
@@ -386,8 +380,7 @@ sub _redirect_filehandles {
 sub _launch_program {
     my ($self) = @_;
     $self->trace("_launch_program()");
-
-    return if -f $self->standby_stop_file;
+    return if $self->_check_stop_file();
 
     my $pid_file = $self->_build_pid_file("unknown-$$");
     $self->_write_file($pid_file, $$);
@@ -395,7 +388,7 @@ sub _launch_program {
 
     my $ipc = IPC::ConcurrencyLimit::WithStandby->new(%{ $self->ipc_cl_options });
 
-    # have to duplicate some logic from IPC::CL:WS
+    # have to duplicate this logic from IPC::CL:WS
     my $retries_classback = $ipc->{retries};
     if (ref $retries_classback ne 'CODE') {
         my $max_retries = $retries_classback;
@@ -408,7 +401,7 @@ sub _launch_program {
     $ipc->{retries} = sub {
         if ($_[0] == 1) { # run code on first attempt
             my $id = $ipc->{standby_lock}->lock_id();
-            $self->trace("acquired standby lock $id");
+            $self->info("acquired standby lock $id");
 
             # adjusting name of pidfile
             my $pid_file = $self->_build_pid_file("standby-$id");
@@ -416,28 +409,30 @@ sub _launch_program {
             $self->{pid_file} = $pid_file;
         }
 
-        return 0 if -f $self->standby_stop_file;
+        return 0 if $self->_check_stop_file();
         return $retries_classback->(@_);
     };
 
     my $id = $ipc->get_lock();
     if (not $id) {
         $self->_unlink_file($self->{pid_file});
-        $self->trace('failed to acquire both locks');
-        return 1; # TODO call callback or maybe pass it $self->program
+        $self->info('failed to acquire both locks, exiting...');
+        return 1;
     }
 
-    $self->trace("acquired main lock id: " . $ipc->lock_id());
+    $self->info("acquired main lock id: " . $ipc->lock_id());
     
     # now pid file should be 'main-$id'
     $pid_file = $self->_build_pid_file("main-$id");
     $self->_rename_file($self->{pid_file}, $pid_file);
     $self->{pid_file} = $pid_file;
 
-    return 0 if -f $self->standby_stop_file;
+    return if $self->_check_stop_file();
 
     my @args = @{ $self->program_args // [] };
     my $res = $self->program->($self, @args);
+
+    $self->_unlink_file($self->{pid_file});
     return $res // 0;
 }
 
@@ -488,8 +483,18 @@ sub _create_dir {
         $self->trace("Dir exists ($dir) - no need to create");
     } else {
         make_path($dir, { error => \my $errors });
-        @$errors and die "error TODO"; # TODO
+        @$errors and die "failed make_path: " . join(' ', map { keys $_, values $_ } @$errors);
         $self->trace("Created dir ($dir)");
+    }
+}
+
+sub _check_stop_file {
+    my $self = shift;
+    if (-f $self->standby_stop_file()) {
+        $self->info('stop file detected');
+        return 1;
+    } else {
+        return 0;
     }
 }
 
@@ -506,6 +511,14 @@ sub pretty_print {
     local $| = 1;
     $process_type =~ s/-/ #/;
     printf("%s: %-40s %40s\n", $self->name, $process_type, "\033[$code" ."m[$message]\033[0m");
+}
+
+sub info {
+    my ($self, $message) = @_;
+    return unless $ENV{DC_TRACE};
+
+    print "$$ [INFO] $message\n" if $ENV{DC_TRACE} == 1;
+    print STDERR "$$ [INFO] $message\n" if $ENV{DC_TRACE} == 2;
 }
 
 sub trace {
