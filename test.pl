@@ -6,6 +6,7 @@ use HADaemon::Control;
 
 HADaemon::Control->new({
     name => 'test.pl',
+    user => 'nobody',
     pid_dir => '/tmp/test',
     program => sub { sleep 10 },
     ipc_cl_options => {

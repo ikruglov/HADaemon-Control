@@ -15,7 +15,7 @@ use IPC::ConcurrencyLimit::WithStandby;
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
-    standby_stop_file
+    standby_stop_file uid gid
 );
 
 foreach my $method (@accessors) {
@@ -41,6 +41,9 @@ sub new {
             $self->{$accessor} = delete $args->{$accessor};
         }
     }
+
+    $self->user(delete $args->{user}) if exists $args->{user};
+    $self->group(delete $args->{group}) if exists $args->{group};
 
     die "Unknown arguments to the constructor: " . join(' ' , keys %$args)
         if keys %$args;
@@ -68,6 +71,21 @@ sub run {
         or $self->{ipc_cl_options}->{path} = catdir($self->pid_dir, 'lock');
     $self->{ipc_cl_options}->{standby_path}
         or $self->{ipc_cl_options}->{standby_path} = catdir($self->pid_dir, 'lock-standby');
+
+    if ($self->uid) {
+        my @uiddata = getpwuid($self->uid);
+        @uiddata or die "Error: Failed to get info about " . $self->uid;
+
+        if (!$self->gid) {
+            $self->gid($uiddata[3]);
+            $self->trace("Implicit GID => " . $uiddata[3]);
+        }
+
+        $self->user
+            or $self->{user} = $uiddata[0];
+
+        $self->{user_home_dir} = $uiddata[7];
+    }
 
     my $called_with = $ARGV[0] // '';
     $called_with =~ s/^[-]+//g;
@@ -352,6 +370,21 @@ sub _fork {
             open(STDIN, "<", File::Spec->devnull);
             $self->_redirect_filehandles();
 
+            if ($self->gid) {
+                POSIX::setgid($self->gid);
+                $self->trace("setgid(" . $self->gid . ")");
+            }
+
+            if ($self->uid) {
+                POSIX::setuid($self->uid);
+                $self->trace("setuid(" . $self->uid . ")");
+
+                $ENV{USER} = $self->{user};
+                $ENV{HOME} = $self->{user_home_dir};
+                $self->trace("\$ENV{USER} => " . $ENV{USER});
+                $self->trace("\$ENV{HOME} => " . $ENV{HOME});
+            }
+
             if ($self->umask) {
                 umask($self->umask);
                 $self->trace("umask(" . $self->umask . ")");
@@ -516,7 +549,7 @@ sub _create_dir {
     if (-d $dir) {
         $self->trace("Dir exists ($dir) - no need to create");
     } else {
-        make_path($dir, { error => \my $errors });
+        make_path($dir, { uid => $self->uid, group => $self->gid, error => \my $errors });
         @$errors and die "failed make_path: " . join(' ', map { keys $_, values $_ } @$errors);
         $self->trace("Created dir ($dir)");
     }
@@ -530,6 +563,41 @@ sub _check_stop_file {
     } else {
         return 0;
     }
+}
+
+#####################################
+# uid/gid routines
+#####################################
+sub user {
+    my ($self, $user) = @_;
+
+    if ($user) {
+        my $uid = getpwnam($user);
+        die "Error: Couldn't get uid for non-existent user $user"
+            unless defined $uid;
+
+        $self->{uid} = $uid;
+        $self->{user} = $user;
+        $self->trace("Set UID => $uid");
+    }
+
+    return $self->{user};
+}
+
+sub group {
+    my ($self, $group) = @_;
+
+    if ($group) {
+        my $gid = getgrnam($group);
+        die "Error: Couldn't get gid for non-existent group $group"
+            unless defined $gid;
+
+        $self->{gid} = $gid;
+        $self->{group} = $group;
+        $self->trace("Set GID => $gid");
+    }
+
+    return $self->{group};
 }
 
 #####################################
