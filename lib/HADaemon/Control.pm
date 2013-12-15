@@ -108,7 +108,12 @@ sub do_stop {
 
     $self->_write_file($self->standby_stop_file);
 
-    foreach my $type (reverse $self->_expected_processes()) {
+    my @expected = (
+        $self->_expected_main_processes(),
+        $self->_expected_standby_processes()
+    );
+
+    foreach my $type (reverse @expected) {
         my $pid = $self->_pid_of_process_type($type);
         if ($pid && $self->_kill_pid($pid)) {
             $self->_unlink_file($self->_build_pid_file($type));
@@ -128,77 +133,56 @@ sub do_stop {
 sub do_restart {
     my ($self) = @_;
 
-    my @expected_main = $self->_expected_main_processes();
-    my @expected_standby = $self->_expected_standby_processes();
-    my %old_main_pids = map { $_ => $self->_pid_of_process_type($_) } @expected_main;
+    if ($self->_main_running() || $self->_standby_running()) {
+        # stoping standby
+        $self->_write_file($self->standby_stop_file);
 
-    # stoping standby
-    $self->_write_file($self->standby_stop_file);
-
-    foreach my $type (@expected_standby) {
-        my $pid = $self->_pid_of_process_type($type);
-        if ($pid && $self->_kill_pid($pid)) {
-            $self->_unlink_file($self->_build_pid_file($type));
+        foreach my $type ($self->_expected_standby_processes()) {
+            my $pid = $self->_pid_of_process_type($type);
+            if ($pid && $self->_kill_pid($pid)) {
+                $self->_unlink_file($self->_build_pid_file($type));
+            }
         }
-    }
 
-    if ($self->_standby_running()) {
-        $self->pretty_print('stopping standby processes', 'Failed', 'red');
-        warn "all standby processes should be stopped at this moment. Can't move forward\n";
-        return 1;
-    }
-
-    $self->pretty_print('stopping standby processes', 'OK');
-
-    # starting standby
-    $self->_unlink_file($self->standby_stop_file);
-
-    if (!$self->_fork_standbys()) {
-        $self->pretty_print('starting standby', 'Failed', 'red');
-        warn "all standby processes should be running at this moment. Can't move forward\n";
-        return 1;
-    }
-
-    $self->pretty_print('starting standby processes', 'OK');
-
-    # restarting main
-    foreach my $type (@expected_main) {
-        my $pid = $self->_pid_of_process_type($type);
-        if (!$pid || $self->_kill_pid($pid)) {
-            $self->_fork_mains();
+        if ($self->_standby_running()) {
+            $self->pretty_print('stopping standby processes', 'Failed', 'red');
+            warn "all standby processes should be stopped at this moment. Can't move forward\n";
+            return 1;
         }
-    }
 
-    # making sure the mains were restarted
-    my $main_running = 0;
-    foreach my $type (keys %old_main_pids) {
-        my $old_pid = $old_main_pids{$type};
-        my $new_pid = $self->_pid_of_process_type($type);
-        next unless $new_pid;
+        $self->pretty_print('stopping standby processes', 'OK');
 
-        $main_running++;
-        if ($old_pid && $old_pid == $new_pid) {
-            $self->pretty_print($type, 'Failed to restart', 'red');
+        # starting standby
+        $self->_unlink_file($self->standby_stop_file);
+
+        if (!$self->_fork_standbys()) {
+            $self->pretty_print('starting standby', 'Failed', 'red');
+            warn "all standby processes should be running at this moment. Can't move forward\n";
+            return 1;
         }
+
+        $self->pretty_print('starting standby processes', 'OK');
+
+        # restarting main
+        foreach my $type ($self->_expected_main_processes()) {
+            $self->_restart_main($type)
+                or $self->pretty_print($type, 'Failed to restart', 'red');
+        }
+
+        # starting mains
+        if (!$self->_fork_mains() || !$self->_fork_standbys()) {
+            $self->pretty_print('restarting main + standby processes', 'Failed', 'red');
+            warn "all main + standby processes should be running at this moment\n";
+
+            $self->do_status();
+            return 1;
+        }
+
+        $self->pretty_print('restarting main processes', 'OK');
+        return 0;
+    } else {
+        return $self->do_start();
     }
-
-    if ($main_running != scalar @expected_main) {
-        $self->pretty_print('restarting main', 'Failed', 'red');
-        warn "all main processes should be running at this moment\n";
-        return 1;
-    }
-
-    $self->pretty_print('restarting main processes', 'OK');
-
-    # starting standbys again
-    if (!$self->_fork_standbys()) {
-        $self->pretty_print('starting standby', 'Failed', 'red');
-        warn "all standby processes should be running at this moment. Can't move forward\n";
-        return 1;
-    }
-
-    $self->pretty_print('starting standby processes', 'OK');
-    return 0;
 }
 
 sub do_hard_restart {
@@ -209,7 +193,7 @@ sub do_hard_restart {
 
 sub do_status {
     my ($self) = @_;
-    foreach my $type ($self->_expected_processes()) {
+    foreach my $type ($self->_expected_main_processes(), $self->_expected_standby_processes()) {
         if ($self->_pid_of_process_type($type)) {
             $self->pretty_print("$type status", 'Running');
         } else {
@@ -235,12 +219,13 @@ sub _fork_mains {
     my ($self) = @_;
     my $expected_main = $self->_expected_main_processes();
 
+    ATTEMPT:
     for (1..3) {
         my $to_start = $expected_main - $self->_main_running();
         $self->_fork() foreach (1 .. $to_start);
 
         for (1 .. $self->_sleep_interval) {
-            last if $self->_main_running() == $expected_main;
+            last ATTEMPT if $self->_main_running() == $expected_main;
             sleep(1);
         }
     }
@@ -252,12 +237,13 @@ sub _fork_standbys {
     my ($self) = @_;
     my $expected_standby = $self->_expected_standby_processes();
 
+    ATTEMPT:
     for (1..3) {
         my $to_start = $expected_standby - $self->_standby_running();
         $self->_fork() foreach (1 .. $to_start);
 
         for (1 .. $self->_sleep_interval) {
-            last if $self->_standby_running() == $expected_standby;
+            last ATTEMPT if $self->_standby_running() == $expected_standby;
             sleep(1);
         }
     }
@@ -293,19 +279,53 @@ sub _pid_of_process_type {
 
 sub _kill_pid {
     my ($self, $pid) = @_;
+    $self->trace("_kill_pid(): $pid");
 
     foreach my $signal (qw(TERM TERM INT KILL)) {
         $self->trace("Sending $signal signal to pid $pid...");
         kill($signal, $pid);
 
-        my $tries = $self->kill_timeout // 1;
-        while ($tries-- && $self->_pid_running($pid)) {
+        for (1 .. $self->kill_timeout // 1) {
+            if (not $self->_pid_running($pid)) {
+                $self->trace("Successfully killed $pid");
+                return 1;
+            }
+
             sleep 1;
         }
-
-        return 1 if not $self->_pid_running($pid);
     }
 
+    $self->trace("Failed to kill $pid");
+    return 0;
+}
+
+sub _restart_main {
+    my ($self, $type) = @_;
+    $self->trace("_restart_main(): $type");
+
+    my $pid = $self->_pid_of_process_type($type);
+    if (not $pid) {
+        $self->trace("Main process $type is not running");
+        return 1;
+    }
+
+    foreach my $signal (qw(TERM TERM INT KILL)) {
+        $self->trace("Sending $signal signal to pid $pid...");
+        kill($signal, $pid);
+
+        # wait until pid change
+        for (1 .. $self->kill_timeout // 1) {
+            my $new_pid = $self->_pid_of_process_type($type);
+            if ($pid != $new_pid) {
+                $self->trace("Successfully restarted main $type");
+                return 1;
+            }
+
+            sleep 1;
+        }
+    }
+
+    $self->trace("Failed to restart main $type");
     return 0;
 }
 
@@ -436,6 +456,20 @@ sub _launch_program {
     return $res // 0;
 }
 
+sub _expected_main_processes {
+    my ($self) = @_;
+    my $num = $self->{ipc_cl_options}->{max_procs} // 0;
+    my @expected = map { "main-$_" } ( 1 .. $num );
+    return wantarray ? @expected : scalar @expected;
+}
+
+sub _expected_standby_processes {
+    my ($self) = @_;
+    my $num = $self->{ipc_cl_options}->{standby_max_procs} // 0;
+    my @expected = map { "standby-$_" } ( 1 .. $num );
+    return wantarray ? @expected : scalar @expected;
+}
+
 #####################################
 # file routines
 #####################################
@@ -533,29 +567,6 @@ sub _all_actions {
     my ($self) = @_; 
     no strict 'refs';
     return map { m/^do_(.+)/ ? $1 : () } keys %{ ref($self) . '::' };
-}
-
-sub _expected_main_processes {
-    my ($self) = @_;
-    my $num = $self->{ipc_cl_options}->{max_procs} // 0;
-    my @expected = map { "main-$_" } ( 1 .. $num );
-    return wantarray ? @expected : scalar @expected;
-}
-
-sub _expected_standby_processes {
-    my ($self) = @_;
-    my $num = $self->{ipc_cl_options}->{standby_max_procs} // 0;
-    my @expected = map { "standby-$_" } ( 1 .. $num );
-    return wantarray ? @expected : scalar @expected;
-}
-
-sub _expected_processes {
-    my ($self) = @_;
-    my @expected = (
-        $self->_expected_main_processes(),
-        $self->_expected_standby_processes(),
-    );
-    return wantarray ? @expected : scalar @expected;
 }
 
 sub _sleep_interval {
