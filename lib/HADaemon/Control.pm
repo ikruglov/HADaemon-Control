@@ -90,7 +90,7 @@ sub run {
     my $called_with = $ARGV[0] // '';
     $called_with =~ s/^[-]+//g;
 
-    my $allowed_actions = join('|', $self->_all_actions());
+    my $allowed_actions = join('|', reverse sort $self->_all_actions());
     $called_with
         or die "Must be called with an action: [$allowed_actions]\n";
 

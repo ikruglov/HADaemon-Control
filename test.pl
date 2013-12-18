@@ -17,4 +17,3 @@ HADaemon::Control->new({
         retries => sub { 1 },
     },
 })->run();
-
