@@ -230,6 +230,18 @@ sub do_fork {
     return 0;
 }
 
+sub do_reload {
+    my ($self) = @_;
+    foreach my $type ($self->_expected_main_processes()) {
+        my $pid = $self->_pid_of_process_type($type);
+        if ($pid && kill('HUP', $pid)) {
+            $self->pretty_print($type, 'Reloaded');
+        } else {
+            $self->pretty_print($type, 'Failed to reload', 'red');
+        }
+    }
+}
+
 #####################################
 # routines to work with processes
 #####################################
