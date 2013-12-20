@@ -33,7 +33,6 @@ sub new {
     my $self = bless {
         color_map     => { red => 31, green => 32 },
         quiet         => 0,
-        kill_timeout  => 1,
     }, $class;
 
     foreach my $accessor (@accessors) {
@@ -63,6 +62,9 @@ sub run {
         or die "Error: name must be defined\n";
     $self->pid_dir
         or die "Error: pid_dir must be defined\n";
+
+    defined($self->kill_timeout)
+        or $self->kill_timeout(1);
 
     $self->standby_stop_file
         or $self->standby_stop_file(catfile($self->pid_dir, 'standby-stop-file'));
@@ -125,13 +127,9 @@ sub do_stop {
     my ($self) = @_;
 
     $self->_write_file($self->standby_stop_file);
+    $self->_wait_standbys_to_complete();
 
-    my @expected = (
-        $self->_expected_main_processes(),
-        $self->_expected_standby_processes()
-    );
-
-    foreach my $type (reverse @expected) {
+    foreach my $type ($self->_expected_main_processes()) {
         my $pid = $self->_pid_of_process_type($type);
         if ($pid && $self->_kill_pid($pid)) {
             $self->_unlink_file($self->_build_pid_file($type));
@@ -151,56 +149,49 @@ sub do_stop {
 sub do_restart {
     my ($self) = @_;
 
-    if ($self->_main_running() || $self->_standby_running()) {
-        # stoping standby
-        $self->_write_file($self->standby_stop_file);
-
-        foreach my $type ($self->_expected_standby_processes()) {
-            my $pid = $self->_pid_of_process_type($type);
-            if ($pid && $self->_kill_pid($pid)) {
-                $self->_unlink_file($self->_build_pid_file($type));
-            }
-        }
-
-        if ($self->_standby_running()) {
-            $self->pretty_print('stopping standby processes', 'Failed', 'red');
-            warn "all standby processes should be stopped at this moment. Can't move forward\n";
-            return 1;
-        }
-
-        $self->pretty_print('stopping standby processes', 'OK');
-
-        # starting standby
-        $self->_unlink_file($self->standby_stop_file);
-
-        if (!$self->_fork_standbys()) {
-            $self->pretty_print('starting standby', 'Failed', 'red');
-            warn "all standby processes should be running at this moment. Can't move forward\n";
-            return 1;
-        }
-
-        $self->pretty_print('starting standby processes', 'OK');
-
-        # restarting main
-        foreach my $type ($self->_expected_main_processes()) {
-            $self->_restart_main($type)
-                or $self->pretty_print($type, 'Failed to restart', 'red');
-        }
-
-        # starting mains
-        if (!$self->_fork_mains() || !$self->_fork_standbys()) {
-            $self->pretty_print('restarting main + standby processes', 'Failed', 'red');
-            warn "all main + standby processes should be running at this moment\n";
-
-            $self->do_status();
-            return 1;
-        }
-
-        $self->pretty_print('restarting main processes', 'OK');
-        return 0;
-    } else {
+    # shortcut
+    if (!$self->_main_running() && !$self->_standby_running()) {
         return $self->do_start();
     }
+
+    # stoping standby
+    $self->_write_file($self->standby_stop_file);
+    if (not $self->_wait_standbys_to_complete()) {
+        $self->pretty_print('stopping standby processes', 'Failed', 'red');
+        warn "all standby processes should be stopped at this moment. Can't move forward\n";
+        return 1;
+    }
+
+    $self->pretty_print('stopping standby processes', 'OK');
+
+    # starting standby
+    $self->_unlink_file($self->standby_stop_file);
+
+    if (!$self->_fork_standbys()) {
+        $self->pretty_print('starting standby', 'Failed', 'red');
+        warn "all standby processes should be running at this moment. Can't move forward\n";
+        return 1;
+    }
+
+    $self->pretty_print('starting standby processes', 'OK');
+
+    # restarting mains and standbys
+    foreach my $type ($self->_expected_main_processes()) {
+        $self->_restart_main($type)
+            or $self->pretty_print($type, 'Failed to restart', 'red');
+    }
+
+    # starting mains
+    if (!$self->_fork_mains() || !$self->_fork_standbys()) {
+        $self->pretty_print('restarting main + standby processes', 'Failed', 'red');
+        warn "all main + standby processes should be running at this moment\n";
+
+        $self->do_status();
+        return 1;
+    }
+
+    $self->pretty_print('restarting main processes', 'OK');
+    return 0;
 }
 
 sub do_hard_restart {
@@ -251,36 +242,34 @@ sub _fork_mains {
     my ($self) = @_;
     my $expected_main = $self->_expected_main_processes();
 
-    ATTEMPT:
     for (1..3) {
         my $to_start = $expected_main - $self->_main_running();
         $self->_fork() foreach (1 .. $to_start);
 
-        for (1 .. $self->_sleep_interval) {
-            last ATTEMPT if $self->_main_running() == $expected_main;
+        for (1 .. $self->_standby_timeout) {
+            return 1 if $self->_main_running() == $expected_main;
             sleep(1);
         }
     }
 
-    return $self->_main_running() == $expected_main;
+    return 0;
 }
 
 sub _fork_standbys {
     my ($self) = @_;
     my $expected_standby = $self->_expected_standby_processes();
 
-    ATTEMPT:
     for (1..3) {
         my $to_start = $expected_standby - $self->_standby_running();
         $self->_fork() foreach (1 .. $to_start);
 
-        for (1 .. $self->_sleep_interval) {
-            last ATTEMPT if $self->_standby_running() == $expected_standby;
+        for (1 .. $self->_standby_timeout) {
+            return 1 if $self->_standby_running() == $expected_standby;
             sleep(1);
         }
     }
 
-    return $self->_standby_running() == $expected_standby;
+    return 0;
 }
 
 sub _main_running {
@@ -317,7 +306,7 @@ sub _kill_pid {
         $self->trace("Sending $signal signal to pid $pid...");
         kill($signal, $pid);
 
-        for (1 .. $self->kill_timeout // 1) {
+        for (1 .. $self->kill_timeout) {
             if (not $self->_pid_running($pid)) {
                 $self->trace("Successfully killed $pid");
                 return 1;
@@ -346,9 +335,9 @@ sub _restart_main {
         kill($signal, $pid);
 
         # wait until pid change
-        for (1 .. $self->kill_timeout // 1) {
+        for (1 .. $self->kill_timeout) {
             my $new_pid = $self->_pid_of_process_type($type);
-            if ($pid != $new_pid) {
+            if ($new_pid && $pid != $new_pid) {
                 $self->trace("Successfully restarted main $type");
                 return 1;
             }
@@ -358,6 +347,18 @@ sub _restart_main {
     }
 
     $self->trace("Failed to restart main $type");
+    return 0;
+}
+
+sub _wait_standbys_to_complete {
+    my ($self) = @_;
+    $self->trace('_wait_all_standbys_to_complete()');
+
+    for (1 .. $self->_standby_timeout) {
+        return 1 if $self->_standby_running() == 0;
+        sleep(1);
+    }
+
     return 0;
 }
 
@@ -494,10 +495,11 @@ sub _launch_program {
     $self->_rename_file($self->{pid_file}, $pid_file);
     $self->{pid_file} = $pid_file;
 
-    return if $self->_check_stop_file();
-
-    my @args = @{ $self->program_args // [] };
-    my $res = $self->program->($self, @args);
+    my $res = 0;
+    if (not $self->_check_stop_file()) {
+        my @args = @{ $self->program_args // [] };
+        $res = $self->program->($self, @args);
+    }
 
     $self->_unlink_file($self->{pid_file});
     return $res // 0;
@@ -633,6 +635,7 @@ sub info {
     my ($self, $message) = @_;
     return unless $ENV{DC_TRACE};
 
+    # TODO need better log messaging
     print "$$ [INFO] $message\n" if $ENV{DC_TRACE} == 1;
     print STDERR "$$ [INFO] $message\n" if $ENV{DC_TRACE} == 2;
 }
@@ -651,7 +654,7 @@ sub _all_actions {
     return map { m/^do_(.+)/ ? $1 : () } keys %{ ref($self) . '::' };
 }
 
-sub _sleep_interval {
+sub _standby_timeout {
     return int(shift->{ipc_cl_options}->{interval} // 0) + 3;
 }
 
