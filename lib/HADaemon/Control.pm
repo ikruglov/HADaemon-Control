@@ -468,7 +468,7 @@ sub _launch_program {
 
     $ipc->{retries} = sub {
         if ($_[0] == 1) { # run code on first attempt
-            my $id = $ipc->{standby_lock}->lock_id();
+            my $id = $ipc_weak->{standby_lock}->lock_id();
             $self->info("acquired standby lock $id");
 
             # adjusting name of pidfile
