@@ -15,7 +15,7 @@ use IPC::ConcurrencyLimit::WithStandby;
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
-    standby_stop_file uid gid
+    standby_stop_file uid gid log_file log_fh
 );
 
 foreach my $method (@accessors) {
@@ -87,6 +87,12 @@ sub run {
             or $self->{user} = $uiddata[0];
 
         $self->{user_home_dir} = $uiddata[7];
+    }
+
+    if ($self->log_file) {
+        open(my $fh, '>>', $self->log_file)
+            or die "Failed to open logfile '$self->log_file': $!";
+        $self->log_fh($fh);
     }
 
     my $called_with = $ARGV[0] // '';
@@ -376,10 +382,11 @@ sub _fork {
         $pid2 and $self->trace("forked $pid2");
 
         if ($pid2 == 0) { # Our double fork.
-            # close all file handlers
+            # close all file handlers but logging one
+            my $log_fd = $self->log_fh ? fileno($self->log_fh) : -1;
             my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
             $max_fd = 64 if !defined $max_fd or $max_fd < 0;
-            POSIX::close($_) foreach (3 .. $max_fd);
+            $log_fd != $_ and POSIX::close($_) foreach (3 .. $max_fd);
 
             # reopening STDIN and redirecting STDOUT and STDERR
             open(STDIN, "<", File::Spec->devnull);
@@ -497,6 +504,7 @@ sub _launch_program {
 
     my $res = 0;
     if (not $self->_check_stop_file()) {
+        $self->log_fh and close($self->log_fh);
         my @args = @{ $self->program_args // [] };
         $res = $self->program->($self, @args);
     }
@@ -633,19 +641,20 @@ sub pretty_print {
 
 sub info {
     my ($self, $message) = @_;
-    return unless $ENV{DC_TRACE};
-
-    # TODO need better log messaging
-    print "$$ [INFO] $message\n" if $ENV{DC_TRACE} == 1;
-    print STDERR "$$ [INFO] $message\n" if $ENV{DC_TRACE} == 2;
+    if ($self->log_fh && defined fileno($self->log_fh)) {
+        print { $self->log_fh } "$$ [INFO] $message\n";
+        $self->log_fh->flush();
+    }
 }
 
 sub trace {
     my ($self, $message) = @_;
     return unless $ENV{DC_TRACE};
 
-    print "$$ [TRACE] $message\n" if $ENV{DC_TRACE} == 1;
-    print STDERR "$$ [TRACE] $message\n" if $ENV{DC_TRACE} == 2;
+    if ($self->log_fh && defined fileno($self->log_fh)) {
+        print { $self->log_fh } "$$ [TRACE] $message\n";
+        $self->log_fh->flush();
+    }
 }
 
 sub _all_actions {
