@@ -76,7 +76,7 @@ sub run {
 
     if ($self->uid) {
         my @uiddata = getpwuid($self->uid);
-        @uiddata or die "Error: Failed to get info about " . $self->uid;
+        @uiddata or die "Error: Failed to get info about " . $self->uid . "\n";
 
         if (!$self->gid) {
             $self->gid($uiddata[3]);
@@ -393,13 +393,13 @@ sub _fork {
             $self->_redirect_filehandles();
 
             if ($self->gid) {
-                POSIX::setgid($self->gid);
                 $self->trace("setgid(" . $self->gid . ")");
+                POSIX::setgid($self->gid) or warn "failed to setgid: $!";
             }
 
             if ($self->uid) {
-                POSIX::setuid($self->uid);
                 $self->trace("setuid(" . $self->uid . ")");
+                POSIX::setuid($self->uid) or warn "failed to setuid: $!";
 
                 $ENV{USER} = $self->{user};
                 $ENV{HOME} = $self->{user_home_dir};
@@ -420,13 +420,13 @@ sub _fork {
             my $res = $self->_launch_program();
             exit($res // 0);
         } elsif (not defined $pid2) {
-            warn "Cannot fork: $!";
+            warn "cannot fork: $!";
             POSIX::_exit(1);
         } else {
             POSIX::_exit(0);
         }
     } elsif (not defined $pid) { # We couldn't fork =(
-        warn "Cannot fork: $!";
+        warn "cannot fork: $!";
     } else {
         # Wait until first kid terminates
         $self->trace("waitpid()");
@@ -440,14 +440,14 @@ sub _redirect_filehandles {
     if ($self->stdout_file) {
         my $file = $self->stdout_file;
         $file = $file eq '/dev/null' ? File::Spec->devnull : $file;
-        open(STDOUT, '>>', $file) or die "Failed to open STDOUT to $file: $!";
+        open(STDOUT, '>>', $file) or die "Failed to open STDOUT to $file: $!\n";
         $self->trace("STDOUT redirected to $file");
     }
 
     if ($self->stderr_file) {
         my $file = $self->stderr_file;
         $file = $file eq '/dev/null' ? File::Spec->devnull : $file;
-        open(STDERR, '>>', $file) or die "Failed to open STDERR to $file: $!";
+        open(STDERR, '>>', $file) or die "Failed to open STDERR to $file: $!\n";
         $self->trace("STDERR redirected to $file");
     }
 }
@@ -539,7 +539,7 @@ sub _read_file {
     my ($self, $file) = @_;
     return undef unless -f $file;
 
-    open(my $fh, "<", $file) or die "Failed to read $file: $!";
+    open(my $fh, '<', $file) or die "Failed to read $file: $!\n";
     my $content = do { local $/; <$fh> };
     close($fh);
 
@@ -551,7 +551,7 @@ sub _write_file {
     my ($self, $file, $content) = @_;
     $content //= '';
 
-    open(my $fh, ">", $file) or die "Failed to write $file: $!";
+    open(my $fh, '>', $file) or die "Failed to write $file: $!\n";
     print $fh $content;
     close($fh);
 
@@ -560,12 +560,15 @@ sub _write_file {
 
 sub _rename_file {
     my ($self, $old_file, $new_file) = @_;
-    rename($old_file, $new_file) and $self->trace("rename pid file ($old_file) to ($new_file)");
+    rename($old_file, $new_file) or die "failed to rename '$old_file' to '$new_file': $!\n";
+    $self->trace("rename pid file ($old_file) to ($new_file)");
 }
 
 sub _unlink_file {
     my ($self, $file) = @_;
-    unlink($file) and $self->trace("unlink file ($file)");
+    return unless -f $file;
+    unlink($file) or die "failed to unlink file '$file': $!\n";
+    $self->trace("unlink file ($file)");
 }
 
 sub _create_dir {
@@ -574,7 +577,7 @@ sub _create_dir {
         $self->trace("Dir exists ($dir) - no need to create");
     } else {
         make_path($dir, { uid => $self->uid, group => $self->gid, error => \my $errors });
-        @$errors and die "failed make_path: " . join(' ', map { keys $_, values $_ } @$errors);
+        @$errors and die "failed make_path: " . join(' ', map { keys $_, values $_ } @$errors) . "\n";
         $self->trace("Created dir ($dir)");
     }
 }
@@ -597,7 +600,7 @@ sub user {
 
     if ($user) {
         my $uid = getpwnam($user);
-        die "Error: Couldn't get uid for non-existent user $user"
+        die "Error: Couldn't get uid for non-existent user $user\n"
             unless defined $uid;
 
         $self->{uid} = $uid;
@@ -613,7 +616,7 @@ sub group {
 
     if ($group) {
         my $gid = getgrnam($group);
-        die "Error: Couldn't get gid for non-existent group $group"
+        die "Error: Couldn't get gid for non-existent group $group\n"
             unless defined $gid;
 
         $self->{gid} = $gid;
