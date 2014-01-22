@@ -15,7 +15,7 @@ use IPC::ConcurrencyLimit::WithStandby;
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
-    standby_stop_file uid gid log_file log_fh
+    standby_stop_file uid gid log_file
 );
 
 foreach my $method (@accessors) {
@@ -92,7 +92,9 @@ sub run {
     if ($self->log_file) {
         open(my $fh, '>>', $self->log_file)
             or die "Failed to open logfile '" . $self->log_file . "': $!\n";
-        $self->log_fh($fh);
+
+        $self->{log_fh} = $fh;
+        chown $self->uid, $self->gid, $self->{log_fh} if $self->uid;
     }
 
     my $called_with = $ARGV[0] // '';
@@ -394,7 +396,7 @@ sub _fork {
 
         if ($pid2 == 0) { # Our double fork.
             # close all file handlers but logging one
-            my $log_fd = $self->log_fh ? fileno($self->log_fh) : -1;
+            my $log_fd = $self->{log_fh} ? fileno($self->{log_fh}) : -1;
             my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
             $max_fd = 64 if !defined $max_fd or $max_fd < 0;
             $log_fd != $_ and POSIX::close($_) foreach (3 .. $max_fd);
@@ -516,7 +518,7 @@ sub _launch_program {
 
     my $res = 0;
     if (not $self->_check_stop_file()) {
-        $self->log_fh and close($self->log_fh);
+        $self->{log_fh} and close($self->{log_fh});
         my @args = @{ $self->program_args // [] };
         $res = $self->program->($self, @args);
     }
@@ -656,10 +658,10 @@ sub pretty_print {
 
 sub info {
     my ($self, $message) = @_;
-    if ($self->log_fh && defined fileno($self->log_fh)) {
+    if ($self->{log_fh} && defined fileno($self->{log_fh})) {
         my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
-        printf { $self->log_fh } "[%s][%d][INFO] %s\n", $date, $$, $message;
-        $self->log_fh->flush();
+        printf { $self->{log_fh} } "[%s][%d][INFO] %s\n", $date, $$, $message;
+        $self->{log_fh}->flush();
     }
 }
 
@@ -667,10 +669,10 @@ sub trace {
     my ($self, $message) = @_;
     return unless $ENV{DC_TRACE};
 
-    if ($self->log_fh && defined fileno($self->log_fh)) {
+    if ($self->{log_fh} && defined fileno($self->{log_fh})) {
         my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
-        printf { $self->log_fh } "[%s][%d][TRACE] %s\n", $date, $$, $message;
-        $self->log_fh->flush();
+        printf { $self->{log_fh} } "[%s][%d][TRACE] %s\n", $date, $$, $message;
+        $self->{log_fh}->flush();
     }
 }
 
