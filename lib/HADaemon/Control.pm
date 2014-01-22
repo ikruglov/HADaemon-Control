@@ -91,7 +91,7 @@ sub run {
 
     if ($self->log_file) {
         open(my $fh, '>>', $self->log_file)
-            or die "Failed to open logfile '$self->log_file': $!";
+            or die "Failed to open logfile '" . $self->log_file . "': $!\n";
         $self->log_fh($fh);
     }
 
@@ -116,6 +116,7 @@ sub run {
 #####################################
 sub do_start {
     my ($self) = @_;
+    $self->info('do_start()');
 
     $self->_unlink_file($self->standby_stop_file);
 
@@ -131,6 +132,7 @@ sub do_start {
 
 sub do_stop {
     my ($self) = @_;
+    $self->info('do_stop()');
 
     $self->_write_file($self->standby_stop_file);
     $self->_wait_standbys_to_complete();
@@ -154,6 +156,7 @@ sub do_stop {
 
 sub do_restart {
     my ($self) = @_;
+    $self->info('do_restart()');
 
     # shortcut
     if (!$self->_main_running() && !$self->_standby_running()) {
@@ -202,12 +205,16 @@ sub do_restart {
 
 sub do_hard_restart {
     my ($self) = @_;
+    $self->info('do_hard_restart()');
+
     $self->do_stop();
     return $self->do_start();
 }
 
 sub do_status {
     my ($self) = @_;
+    $self->info('do_status()');
+
     foreach my $type ($self->_expected_main_processes(), $self->_expected_standby_processes()) {
         if ($self->_pid_of_process_type($type)) {
             $self->pretty_print("$type status", 'Running');
@@ -219,6 +226,7 @@ sub do_status {
 
 sub do_fork {
     my ($self) = @_;
+    $self->info('do_fork()');
 
     $self->_fork(); # always spawn at least one new process
     $self->_fork_mains();
@@ -229,6 +237,8 @@ sub do_fork {
 
 sub do_reload {
     my ($self) = @_;
+    $self->info('do_reload()');
+
     foreach my $type ($self->_expected_main_processes()) {
         my $pid = $self->_pid_of_process_type($type);
         if (!$pid) {
@@ -371,6 +381,7 @@ sub _wait_standbys_to_complete {
 sub _fork {
     my ($self) = @_;
     $self->trace("_double_fork()");
+    my $parent_pid = $$;
 
     my $pid = fork();
     $pid and $self->trace("forked $pid");
@@ -423,6 +434,7 @@ sub _fork {
             warn "cannot fork: $!";
             POSIX::_exit(1);
         } else {
+            $self->info("parent process ($parent_pid) forked child ($pid2)");
             POSIX::_exit(0);
         }
     } elsif (not defined $pid) { # We couldn't fork =(
@@ -645,7 +657,8 @@ sub pretty_print {
 sub info {
     my ($self, $message) = @_;
     if ($self->log_fh && defined fileno($self->log_fh)) {
-        print { $self->log_fh } "$$ [INFO] $message\n";
+        my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
+        printf { $self->log_fh } "[%s][%d][INFO] %s\n", $date, $$, $message;
         $self->log_fh->flush();
     }
 }
@@ -655,7 +668,8 @@ sub trace {
     return unless $ENV{DC_TRACE};
 
     if ($self->log_fh && defined fileno($self->log_fh)) {
-        print { $self->log_fh } "$$ [TRACE] $message\n";
+        my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
+        printf { $self->log_fh } "[%s][%d][TRACE] %s\n", $date, $$, $message;
         $self->log_fh->flush();
     }
 }
