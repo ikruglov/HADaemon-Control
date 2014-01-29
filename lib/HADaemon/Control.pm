@@ -387,7 +387,7 @@ sub _kill_or_die {
     my $res = kill($signal, $pid);
     if (!$res && $! != ESRCH) {
         # don't want to die if proccess simply doesn't exists
-        die "failed to send signal to $pid: $!";
+        die "failed to send signal to $pid: $!\n";
     }
 
     return $res;
