@@ -10,6 +10,7 @@ use File::Basename;
 use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
+use Errno qw(ESRCH EPERM);
 
 # Accessor building
 my @accessors = qw(
@@ -68,6 +69,10 @@ sub run {
 
     $self->standby_stop_file
         or $self->standby_stop_file(catfile($self->pid_dir, 'standby-stop-file'));
+
+    $self->{ipc_cl_options}->{standby_max_procs}
+        and not defined $self->{ipc_cl_options}->{retries}
+            and warn "ipc_cl_options: 'standby_max_procs' defined but 'retries' not";
 
     $self->{ipc_cl_options}->{path}
         or $self->{ipc_cl_options}->{path} = catdir($self->pid_dir, 'lock');
@@ -248,6 +253,8 @@ sub do_reload {
         } elsif (kill('HUP', $pid)) {
             $self->pretty_print($type, 'Reloaded');
         } else {
+            $! == EPERM and warn "not enough permissions to send signal";
+            $self->warn("failed to send signal to $pid: $!");
             $self->pretty_print($type, 'Failed to reload', 'red');
         }
     }
@@ -304,7 +311,13 @@ sub _standby_running {
 
 sub _pid_running {
     my ($self, $pid) = @_;
-    my $res = $pid && $pid > 1 ? kill(0, $pid) : 0;
+
+    if (not $pid) {
+        $self->trace("_pid_running: invalid pid"),
+        return 0;
+    }
+
+    my $res = $self->_kill_or_die(0, $pid);
     $self->trace("pid $pid is " . ($res ? 'running' : 'not running'));
     return $res;
 }
@@ -322,7 +335,7 @@ sub _kill_pid {
 
     foreach my $signal (qw(TERM TERM INT KILL)) {
         $self->trace("Sending $signal signal to pid $pid...");
-        kill($signal, $pid);
+        $self->_kill_or_die($signal, $pid);
 
         for (1 .. $self->kill_timeout) {
             if (not $self->_pid_running($pid)) {
@@ -350,7 +363,7 @@ sub _restart_main {
 
     foreach my $signal (qw(TERM TERM INT KILL)) {
         $self->trace("Sending $signal signal to pid $pid...");
-        kill($signal, $pid);
+        $self->_kill_or_die($signal, $pid);
 
         # wait until pid change
         for (1 .. $self->kill_timeout) {
@@ -366,6 +379,18 @@ sub _restart_main {
 
     $self->trace("Failed to restart main $type");
     return 0;
+}
+
+sub _kill_or_die {
+    my ($self, $signal, $pid) = @_;
+
+    my $res = kill($signal, $pid);
+    if (!$res && $! != ESRCH) {
+        # don't want to die if proccess simply doesn't exists
+        die "failed to send signal to $pid: $!";
+    }
+
+    return $res;
 }
 
 sub _wait_standbys_to_complete {
@@ -656,22 +681,15 @@ sub pretty_print {
     printf("%s: %-40s %40s\n", $self->name, $process_type, "\033[$code" ."m[$message]\033[0m");
 }
 
-sub info {
-    my ($self, $message) = @_;
+sub info { $_[0]->_log('INFO', $_[1]); }
+sub warn { $_[0]->_log('WARN', $_[1]); }
+sub trace { $ENV{DC_TRACE} and $_[0]->_log('TRACE', $_[1]); }
+
+sub _log {
+    my ($self, $level, $message) = @_;
     if ($self->{log_fh} && defined fileno($self->{log_fh})) {
         my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
-        printf { $self->{log_fh} } "[%s][%d][INFO] %s\n", $date, $$, $message;
-        $self->{log_fh}->flush();
-    }
-}
-
-sub trace {
-    my ($self, $message) = @_;
-    return unless $ENV{DC_TRACE};
-
-    if ($self->{log_fh} && defined fileno($self->{log_fh})) {
-        my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
-        printf { $self->{log_fh} } "[%s][%d][TRACE] %s\n", $date, $$, $message;
+        printf { $self->{log_fh} } "[%s][%d][%s] %s\n", $date, $$, $level, $message;
         $self->{log_fh}->flush();
     }
 }
