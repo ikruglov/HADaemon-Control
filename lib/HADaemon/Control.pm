@@ -16,7 +16,7 @@ use Errno qw(ESRCH EPERM);
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
-    standby_stop_file uid gid log_file
+    standby_stop_file uid gid log_file process_name_change
 );
 
 foreach my $method (@accessors) {
@@ -78,6 +78,8 @@ sub run {
         or $self->{ipc_cl_options}->{path} = catdir($self->pid_dir, 'lock');
     $self->{ipc_cl_options}->{standby_path}
         or $self->{ipc_cl_options}->{standby_path} = catdir($self->pid_dir, 'lock-standby');
+    $self->{process_name_change}
+        and $self->{ipc_cl_options}->{process_name_change} = 1;
 
     if ($self->uid) {
         my @uiddata = getpwuid($self->uid);
@@ -494,6 +496,9 @@ sub _launch_program {
     my ($self) = @_;
     $self->trace("_launch_program()");
     return if $self->_check_stop_file();
+
+    $self->process_name_change
+        and $0 = $self->name;
 
     my $pid_file = $self->_build_pid_file("unknown-$$");
     $self->_write_file($pid_file, $$);
