@@ -248,14 +248,11 @@ sub do_reload {
 
     foreach my $type ($self->_expected_main_processes()) {
         my $pid = $self->_pid_of_process_type($type);
-        if (!$pid) {
-            $self->pretty_print("$type status", 'Not Running', 'red');
-        } elsif (kill('HUP', $pid)) {
+        if ($pid) {
+            $self->_kill_or_die('HUP', $pid);
             $self->pretty_print($type, 'Reloaded');
         } else {
-            $! == EPERM and warn "not enough permissions to send signal";
-            $self->warn("failed to send signal to $pid: $!");
-            $self->pretty_print($type, 'Failed to reload', 'red');
+            $self->pretty_print("$type status", 'Not Running', 'red');
         }
     }
 }
@@ -387,7 +384,9 @@ sub _kill_or_die {
     my $res = kill($signal, $pid);
     if (!$res && $! != ESRCH) {
         # don't want to die if proccess simply doesn't exists
-        die "failed to send signal to $pid: $!\n";
+        my $msg = "failed to send signal to pid $pid: $!" . ($! == EPERM ? ' (not enough permissions, probably should run as root)' : '');
+        $self->warn($msg);
+        die "$msg\n";
     }
 
     return $res;
