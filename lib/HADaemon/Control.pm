@@ -127,6 +127,16 @@ sub do_start {
     my ($self) = @_;
     $self->info('do_start()');
 
+    my $expected_main = $self->_expected_main_processes();
+    my $expected_standby = $self->_expected_standby_processes();
+    if (   $self->_main_running() == $expected_main
+        && $self->_standby_running() == $expected_standby)
+    {
+        $self->pretty_print('starting main + standby processes', 'Already Running');
+        $self->trace("do_start(): all processes are already running");
+        return 0;
+    }
+
     $self->_unlink_file($self->standby_stop_file);
 
     if ($self->_fork_mains() && $self->_fork_standbys()) {
@@ -142,6 +152,12 @@ sub do_start {
 sub do_stop {
     my ($self) = @_;
     $self->info('do_stop()');
+
+    if (!$self->_main_running() && !$self->_standby_running()) {
+        $self->pretty_print('stopping main + standby processes', 'Not Running', 'red');
+        $self->trace("do_stop(): all processes are not running");
+        return 0;
+    }
 
     $self->_write_file($self->standby_stop_file);
     $self->_wait_standbys_to_complete();
