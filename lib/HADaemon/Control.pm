@@ -252,6 +252,7 @@ sub do_status {
 sub do_fork {
     my ($self) = @_;
     $self->info('do_fork()');
+    return if $self->_check_stop_file();
 
     $self->_fork(); # always spawn at least one new process
     $self->_fork_mains();
@@ -431,7 +432,8 @@ sub _fork {
     $pid and $self->trace("forked $pid");
 
     if ($pid == 0) { # Child, launch the process here
-        POSIX::setsid(); # Become the process leader
+        # Become session leader
+        POSIX::setsid() or warn "failed to setsid: $!";
 
         my $pid2 = fork();
         $pid2 and $self->trace("forked $pid2");
