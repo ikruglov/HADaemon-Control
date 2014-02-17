@@ -74,6 +74,9 @@ sub run {
         and not defined $self->{ipc_cl_options}->{retries}
             and warn "ipc_cl_options: 'standby_max_procs' defined but 'retries' not";
 
+    ($self->{ipc_cl_options}->{type} //= 'Flock') eq 'Flock'
+        or die "can work only with Flock backend\n";
+
     $self->{ipc_cl_options}->{path}
         or $self->{ipc_cl_options}->{path} = catdir($self->pid_dir, 'lock');
     $self->{ipc_cl_options}->{standby_path}
@@ -565,7 +568,10 @@ sub _launch_program {
 
     my $res = 0;
     if (not $self->_check_stop_file()) {
+        my $lock_fd = $self->_main_lock_fd($ipc);
+        $lock_fd and $ENV{HADC_lock_fd} = $lock_fd;
         $self->{log_fh} and close($self->{log_fh});
+
         my @args = @{ $self->program_args // [] };
         $res = $self->program->($self, @args);
     }
@@ -724,6 +730,21 @@ sub _all_actions {
 
 sub _standby_timeout {
     return int(shift->{ipc_cl_options}->{interval} // 0) + 3;
+}
+
+sub _main_lock_fd {
+    my ($self, $ipc) = @_;
+    if (   exists $ipc->{main_lock}
+        && exists $ipc->{main_lock}->{lock_obj}
+        && exists $ipc->{main_lock}->{lock_obj}->{lock_fh})
+    {
+        my $fd = fileno($ipc->{main_lock}->{lock_obj}->{lock_fh});
+        $self->trace("detected lock fd: $fd");
+        return $fd;
+    }
+
+    $self->warn("failed to detect lock fd");
+    return undef;
 }
 
 1;
