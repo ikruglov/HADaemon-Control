@@ -86,7 +86,7 @@ sub run {
 
     if ($self->uid) {
         my @uiddata = getpwuid($self->uid);
-        @uiddata or die "Error: Failed to get info about " . $self->uid . "\n";
+        @uiddata or die "failed to get info about " . $self->uid . "\n";
 
         if (!$self->gid) {
             $self->gid($uiddata[3]);
@@ -101,7 +101,7 @@ sub run {
 
     if ($self->log_file) {
         open(my $fh, '>>', $self->log_file)
-            or die "Failed to open logfile '" . $self->log_file . "': $!\n";
+            or die "failed to open logfile '" . $self->log_file . "': $!\n";
 
         $self->{log_fh} = $fh;
         chown $self->uid, $self->gid, $self->{log_fh} if $self->uid;
@@ -149,6 +149,8 @@ sub do_start {
 
     $self->pretty_print('starting main + standby processes', 'Failed', 'red');
     $self->do_status();
+    $self->detect_stolen_lock();
+
     return 1;
 }
 
@@ -195,7 +197,7 @@ sub do_restart {
     $self->_write_file($self->standby_stop_file);
     if (not $self->_wait_standbys_to_complete()) {
         $self->pretty_print('stopping standby processes', 'Failed', 'red');
-        warn "all standby processes should be stopped at this moment. Can't move forward\n";
+        $self->warn("all standby processes should be stopped at this moment. Can't move forward");
         return 1;
     }
 
@@ -221,9 +223,10 @@ sub do_restart {
     # starting mains
     if (!$self->_fork_mains() || !$self->_fork_standbys()) {
         $self->pretty_print('restarting main + standby processes', 'Failed', 'red');
-        warn "all main + standby processes should be running at this moment\n";
+        $self->warn("all main + standby processes should be running at this moment");
 
         $self->do_status();
+        $self->detect_stolen_lock();
         return 1;
     }
 
@@ -407,7 +410,7 @@ sub _kill_or_die {
     if (!$res && $! != ESRCH) {
         # don't want to die if proccess simply doesn't exists
         my $msg = "failed to send signal to pid $pid: $!" . ($! == EPERM ? ' (not enough permissions, probably should run as root)' : '');
-        $self->warn($msg);
+        $self->warn($msg, 1);
         die "$msg\n";
     }
 
@@ -436,7 +439,7 @@ sub _fork {
 
     if ($pid == 0) { # Child, launch the process here
         # Become session leader
-        POSIX::setsid() or warn "failed to setsid: $!";
+        POSIX::setsid() or $self->warn("failed to setsid: $!");
 
         my $pid2 = fork();
         $pid2 and $self->trace("forked $pid2");
@@ -454,12 +457,12 @@ sub _fork {
 
             if ($self->gid) {
                 $self->trace("setgid(" . $self->gid . ")");
-                POSIX::setgid($self->gid) or warn "failed to setgid: $!";
+                POSIX::setgid($self->gid) or $self->warn("failed to setgid: $!");
             }
 
             if ($self->uid) {
                 $self->trace("setuid(" . $self->uid . ")");
-                POSIX::setuid($self->uid) or warn "failed to setuid: $!";
+                POSIX::setuid($self->uid) or $self->warn("failed to setuid: $!");
 
                 $ENV{USER} = $self->{user};
                 $ENV{HOME} = $self->{user_home_dir};
@@ -480,14 +483,14 @@ sub _fork {
             my $res = $self->_launch_program();
             exit($res // 0);
         } elsif (not defined $pid2) {
-            warn "cannot fork: $!";
+            $self->warn("cannot fork: $!");
             POSIX::_exit(1);
         } else {
             $self->info("parent process ($parent_pid) forked child ($pid2)");
             POSIX::_exit(0);
         }
     } elsif (not defined $pid) { # We couldn't fork =(
-        warn "cannot fork: $!";
+        $self->warn("cannot fork: $!");
     } else {
         # Wait until first kid terminates
         $self->trace("waitpid()");
@@ -606,7 +609,7 @@ sub _read_file {
     my ($self, $file) = @_;
     return undef unless -f $file;
 
-    open(my $fh, '<', $file) or die "Failed to read $file: $!\n";
+    open(my $fh, '<', $file) or die "failed to read $file: $!\n";
     my $content = do { local $/; <$fh> };
     close($fh);
 
@@ -618,7 +621,7 @@ sub _write_file {
     my ($self, $file, $content) = @_;
     $content //= '';
 
-    open(my $fh, '>', $file) or die "Failed to write $file: $!\n";
+    open(my $fh, '>', $file) or die "failed to write $file: $!\n";
     print $fh $content;
     close($fh);
 
@@ -695,6 +698,30 @@ sub group {
 }
 
 #####################################
+# lock detection logic
+#####################################
+sub detect_stolen_lock {
+    my ($self) = @_;
+    $self->_main_running() != $self->_expected_main_processes() && $self->_standby_running() == $self->_expected_standby_processes()
+        and $self->warn("one of main processes failed to acquire main lock, something is possibly holding it!!!");
+}
+
+sub _main_lock_fd {
+    my ($self, $ipc) = @_;
+    if (   exists $ipc->{main_lock}
+        && exists $ipc->{main_lock}->{lock_obj}
+        && exists $ipc->{main_lock}->{lock_obj}->{lock_fh})
+    {
+        my $fd = fileno($ipc->{main_lock}->{lock_obj}->{lock_fh});
+        $self->trace("detected lock fd: $fd");
+        return $fd;
+    }
+
+    $self->warn("failed to detect lock fd");
+    return undef;
+}
+
+#####################################
 # misc
 #####################################
 sub pretty_print {
@@ -710,7 +737,7 @@ sub pretty_print {
 }
 
 sub info { $_[0]->_log('INFO', $_[1]); }
-sub warn { $_[0]->_log('WARN', $_[1]); }
+sub warn { $_[0]->_log('WARN', $_[1]); $_[2] or warn $_[1] . "\n"; }
 sub trace { $ENV{DC_TRACE} and $_[0]->_log('TRACE', $_[1]); }
 
 sub _log {
@@ -730,21 +757,6 @@ sub _all_actions {
 
 sub _standby_timeout {
     return int(shift->{ipc_cl_options}->{interval} // 0) + 3;
-}
-
-sub _main_lock_fd {
-    my ($self, $ipc) = @_;
-    if (   exists $ipc->{main_lock}
-        && exists $ipc->{main_lock}->{lock_obj}
-        && exists $ipc->{main_lock}->{lock_obj}->{lock_fh})
-    {
-        my $fd = fileno($ipc->{main_lock}->{lock_obj}->{lock_fh});
-        $self->trace("detected lock fd: $fd");
-        return $fd;
-    }
-
-    $self->warn("failed to detect lock fd");
-    return undef;
 }
 
 1;
