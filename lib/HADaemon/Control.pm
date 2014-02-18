@@ -17,6 +17,7 @@ my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
     standby_stop_file uid gid log_file process_name_change
+    called_with
 );
 
 foreach my $method (@accessors) {
@@ -116,8 +117,9 @@ sub run {
 
     my $action = "do_$called_with";
     if ($self->can($action)) {
+        $self->{called_with} = $called_with;
         $self->_create_dir($self->pid_dir);
-        exit($self->$action() // 0);
+        return $self->$action() // 0;
     }
 
     die "Error: unknown action $called_with. [$allowed_actions]\n";
@@ -258,12 +260,10 @@ sub do_status {
 sub do_fork {
     my ($self) = @_;
     $self->info('do_fork()');
-    return if $self->_check_stop_file();
+    return 1 if $self->_check_stop_file();
 
-    $self->_fork(); # always spawn at least one new process
     $self->_fork_mains();
     $self->_fork_standbys();
-
     return 0;
 }
 

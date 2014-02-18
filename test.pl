@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use HADaemon::Control;
 
-HADaemon::Control->new({
+my $dc = HADaemon::Control->new({
     name => 'test.pl',
     user => 'nobody',
     #use_main_stop_file => 1,
@@ -16,4 +16,6 @@ HADaemon::Control->new({
         standby_max_procs => 2,
         retries => sub { 1 },
     },
-})->run();
+});
+
+exit $dc->run();
