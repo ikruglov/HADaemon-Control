@@ -3,14 +3,13 @@ package HADaemon::Control;
 use strict;
 use warnings;
 
-use POSIX;
+use POSIX ();
 use File::Spec;
 use File::Spec::Functions;
 use File::Basename;
 use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
-use Errno qw(ESRCH EPERM);
 
 # Accessor building
 my @accessors = qw(
@@ -407,9 +406,9 @@ sub _kill_or_die {
     my ($self, $signal, $pid) = @_;
 
     my $res = kill($signal, $pid);
-    if (!$res && $! != ESRCH) {
+    if (!$res && $! != POSIX::ESRCH) {
         # don't want to die if proccess simply doesn't exists
-        my $msg = "failed to send signal to pid $pid: $!" . ($! == EPERM ? ' (not enough permissions, probably should run as root)' : '');
+        my $msg = "failed to send signal to pid $pid: $!" . ($! == POSIX::EPERM ? ' (not enough permissions, probably should run as root)' : '');
         $self->warn($msg, 1);
         die "$msg\n";
     }
