@@ -727,12 +727,17 @@ sub pretty_print {
 
     local $| = 1;
     $process_type =~ s/-/ #/;
-    printf("%s: %-40s %40s\n", $self->name, $process_type, "\033[$code" ."m[$message]\033[0m");
+
+    if ($ENV{HADC_NO_COLORS}) {
+        printf("%s: %-40s %40s\n", $self->name, $process_type, "[$message]");
+    } else {
+        printf("%s: %-40s %40s\n", $self->name, $process_type, "\033[$code" ."m[$message]\033[0m");
+    }
 }
 
 sub info { $_[0]->_log('INFO', $_[1]); }
 sub warn { $_[0]->_log('WARN', $_[1]); $_[2] or warn $_[1] . "\n"; }
-sub trace { $ENV{DC_TRACE} and $_[0]->_log('TRACE', $_[1]); }
+sub trace { $ENV{HADC_TRACE} and $_[0]->_log('TRACE', $_[1]); }
 
 sub _log {
     my ($self, $level, $message) = @_;
