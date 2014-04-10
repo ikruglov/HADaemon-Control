@@ -443,15 +443,6 @@ sub _fork {
         $pid2 and $self->trace("forked $pid2");
 
         if ($pid2 == 0) { # Our double fork.
-            # close all file handlers but logging one
-            my $log_fd = $self->{log_fh} ? fileno($self->{log_fh}) : -1;
-            my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
-            $max_fd = 64 if !defined $max_fd or $max_fd < 0;
-            $log_fd != $_ and POSIX::close($_) foreach (0 .. $max_fd);
-
-            # reopen stad descriptors
-            $self->_open_std_filehandles();
-
             if ($self->gid) {
                 $self->trace("setgid(" . $self->gid . ")");
                 POSIX::setgid($self->gid) or $self->warn("failed to setgid: $!");
@@ -476,6 +467,15 @@ sub _fork {
                 chdir($self->directory);
                 $self->trace("chdir(" . $self->directory . ")");
             }
+
+            # close all file handlers but logging one
+            my $log_fd = $self->{log_fh} ? fileno($self->{log_fh}) : -1;
+            my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
+            $max_fd = 64 if !defined $max_fd or $max_fd < 0;
+            $log_fd != $_ and POSIX::close($_) foreach (0 .. $max_fd);
+
+            # reopen stad descriptors
+            $self->_open_std_filehandles();
 
             my $res = $self->_launch_program();
             exit($res // 0);
