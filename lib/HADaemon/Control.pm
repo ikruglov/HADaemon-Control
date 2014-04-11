@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use POSIX ();
+use Cwd qw(abs_path);
 use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
@@ -12,8 +13,8 @@ use IPC::ConcurrencyLimit::WithStandby;
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
-    standby_stop_file uid gid log_file process_name_change
-    called_with
+    standby_stop_file uid gid log_file process_name_change called_with
+    path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc
 );
 
 foreach my $method (@accessors) {
@@ -276,6 +277,12 @@ sub do_reload {
             $self->pretty_print("$type status", 'Not Running', 'red');
         }
     }
+}
+
+sub do_get_init_file {
+    my ($self) = @_;
+    $self->info('do_get_init_file()');
+    return $self->_dump_init_script();
 }
 
 #####################################
@@ -756,7 +763,79 @@ sub _standby_timeout {
     return int(shift->{ipc_cl_options}->{interval} // 0) + 3;
 }
 
+#####################################
+# init script logic
+#####################################
+sub _dump_init_script {
+    my ( $self ) = @_;
+
+    my $data;
+    while ( my $line = <DATA> ) {
+        last if $line =~ /^__END__$/;
+        $data .= $line;
+    }
+
+    # So, instead of expanding run_template to use a real DSL
+    # or making TT a dependancy, I'm just going to fake template
+    # IF logic.
+    my $init_source_file = $self->init_config
+        ? $self->run_template(
+            '[ -r [% FILE %] ] && . [% FILE %]',
+            { FILE => $self->init_config } )
+        : "";
+
+    print $self->_run_template(
+        $data,
+        {
+            HEADER            => 'Generated at ' . scalar(localtime) . ' with HADaemon::Control ' . ($self->VERSION // 'DEV'),
+            NAME              => $self->name      // '',
+            REQUIRED_START    => $self->lsb_start // '',
+            REQUIRED_STOP     => $self->lsb_stop  // '',
+            SHORT_DESCRIPTION => $self->lsb_sdesc // '',
+            DESCRIPTION       => $self->lsb_desc  // '',
+            SCRIPT            => $self->path      // abs_path($0),
+            INIT_SOURCE_FILE  => $init_source_file,
+            INIT_CODE_BLOCK   => $self->init_code // '',
+        }
+    );
+
+    return 0;
+}
+
+sub _run_template {
+    my ($self, $content, $config) = @_;
+    $content =~ s/\[% (.*?) %\]/$config->{$1}/g;
+    return $content;
+}
+
 1;
+
+__DATA__
+#!/bin/sh
+
+# [% HEADER %]
+
+### BEGIN INIT INFO
+# Provides:          [% NAME %]
+# Required-Start:    [% REQUIRED_START %]
+# Required-Stop:     [% REQUIRED_STOP %]
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: [% SHORT_DESCRIPTION %]
+# Description:       [% DESCRIPTION %]
+### END INIT INFO
+
+[% INIT_SOURCE_FILE %]
+
+[% INIT_CODE_BLOCK %]
+
+if [ -x [% SCRIPT %] ];
+then
+    [% SCRIPT %] $1
+else
+    echo "Required program [% SCRIPT %] not found!"
+    exit 1;
+fi
 
 __END__
 
