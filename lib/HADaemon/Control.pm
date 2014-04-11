@@ -4,8 +4,6 @@ use strict;
 use warnings;
 
 use POSIX ();
-use File::Basename;
-use File::Spec::Functions;
 use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
@@ -67,7 +65,7 @@ sub run {
         or $self->kill_timeout(1);
 
     $self->standby_stop_file
-        or $self->standby_stop_file(catfile($self->pid_dir, 'standby-stop-file'));
+        or $self->standby_stop_file($self->pid_dir . '/standby-stop-file');
 
     $self->{ipc_cl_options}->{standby_max_procs}
         and not defined $self->{ipc_cl_options}->{retries}
@@ -77,9 +75,9 @@ sub run {
         or die "can work only with Flock backend\n";
 
     $self->{ipc_cl_options}->{path}
-        or $self->{ipc_cl_options}->{path} = catdir($self->pid_dir, 'lock');
+        or $self->{ipc_cl_options}->{path} = $self->pid_dir . '/lock/';
     $self->{ipc_cl_options}->{standby_path}
-        or $self->{ipc_cl_options}->{standby_path} = catdir($self->pid_dir, 'lock-standby');
+        or $self->{ipc_cl_options}->{standby_path} = $self->pid_dir . '/lock-standby/';
     $self->{process_name_change}
         and $self->{ipc_cl_options}->{process_name_change} = 1;
 
@@ -596,7 +594,7 @@ sub _expected_standby_processes {
 #####################################
 sub _build_pid_file {
     my ($self, $type) = @_;
-    return catfile($self->pid_dir, "$type.pid");
+    return $self->pid_dir . "/$type.pid";
 }
 
 sub _read_file {
