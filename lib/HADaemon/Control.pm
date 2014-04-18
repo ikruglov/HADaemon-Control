@@ -414,8 +414,7 @@ sub _kill_or_die {
     if (!$res && $! != POSIX::ESRCH) {
         # don't want to die if proccess simply doesn't exists
         my $msg = "failed to send signal to pid $pid: $!" . ($! == POSIX::EPERM ? ' (not enough permissions, probably should run as root)' : '');
-        $self->warn($msg, 1);
-        die "$msg\n";
+        $self->die($msg);
     }
 
     return $res;
@@ -443,7 +442,7 @@ sub _fork {
 
     if ($pid == 0) { # Child, launch the process here
         # Become session leader
-        POSIX::setsid() or $self->warn("failed to setsid: $!");
+        POSIX::setsid() or $self->die("failed to setsid: $!");
 
         my $pid2 = fork();
         $pid2 and $self->trace("forked $pid2");
@@ -451,12 +450,12 @@ sub _fork {
         if ($pid2 == 0) { # Our double fork.
             if ($self->gid) {
                 $self->trace("setgid(" . $self->gid . ")");
-                POSIX::setgid($self->gid) or $self->warn("failed to setgid: $!");
+                POSIX::setgid($self->gid) or $self->die("failed to setgid: $!");
             }
 
             if ($self->uid) {
                 $self->trace("setuid(" . $self->uid . ")");
-                POSIX::setuid($self->uid) or $self->warn("failed to setuid: $!");
+                POSIX::setuid($self->uid) or $self->die("failed to setuid: $!");
 
                 $ENV{USER} = $self->{user};
                 $ENV{HOME} = $self->{user_home_dir};
@@ -493,7 +492,7 @@ sub _fork {
             POSIX::_exit(0);
         }
     } elsif (not defined $pid) { # We couldn't fork =(
-        $self->warn("cannot fork: $!");
+        $self->die("cannot fork: $!");
     } else {
         # Wait until first kid terminates
         $self->trace("waitpid()");
@@ -505,14 +504,14 @@ sub _open_std_filehandles {
     my ($self) = @_;
 
     # reopening STDIN, STDOUT, STDERR
-    open(STDIN, '<', '/dev/null') or die "Failed to open STDIN: $!";
+    open(STDIN, '<', '/dev/null') or $self->die("Failed to open STDIN: $!");
 
     my $stdout = $self->stdout_file // '/dev/null';
-    open(STDOUT, '>>', $stdout) or die "Failed to open STDOUT to $stdout: $!\n";
+    open(STDOUT, '>>', $stdout) or $self->die("Failed to open STDOUT to $stdout: $!");
     $self->trace("STDOUT redirected to $stdout");
 
     my $stderr = $self->stderr_file // '/dev/null';
-    open(STDERR, '>>', $stderr) or die "Failed to open STDERR to $stderr: $!\n";
+    open(STDERR, '>>', $stderr) or $self->die("Failed to open STDERR to $stderr: $!");
     $self->trace("STDERR redirected to $stderr");
 }
 
@@ -609,7 +608,7 @@ sub _read_file {
     my ($self, $file) = @_;
     return undef unless -f $file;
 
-    open(my $fh, '<', $file) or die "failed to read $file: $!\n";
+    open(my $fh, '<', $file) or $self->die("failed to read $file: $!");
     my $content = do { local $/; <$fh> };
     close($fh);
 
@@ -621,7 +620,7 @@ sub _write_file {
     my ($self, $file, $content) = @_;
     $content //= '';
 
-    open(my $fh, '>', $file) or die "failed to write $file: $!\n";
+    open(my $fh, '>', $file) or $self->die("failed to write $file: $!");
     print $fh $content;
     close($fh);
 
@@ -630,14 +629,14 @@ sub _write_file {
 
 sub _rename_file {
     my ($self, $old_file, $new_file) = @_;
-    rename($old_file, $new_file) or die "failed to rename '$old_file' to '$new_file': $!\n";
+    rename($old_file, $new_file) or $self->die("failed to rename '$old_file' to '$new_file': $!");
     $self->trace("rename pid file ($old_file) to ($new_file)");
 }
 
 sub _unlink_file {
     my ($self, $file) = @_;
     return unless -f $file;
-    unlink($file) or die "failed to unlink file '$file': $!\n";
+    unlink($file) or $self->die("failed to unlink file '$file': $!");
     $self->trace("unlink file ($file)");
 }
 
@@ -647,7 +646,7 @@ sub _create_dir {
         $self->trace("Dir exists ($dir) - no need to create");
     } else {
         make_path($dir, { uid => $self->uid, group => $self->gid, error => \my $errors });
-        @$errors and die "failed make_path: " . join(' ', map { keys $_, values $_ } @$errors) . "\n";
+        @$errors and $self->die("failed make_path: " . join(' ', map { keys $_, values $_ } @$errors));
         $self->trace("Created dir ($dir)");
     }
 }
@@ -669,9 +668,8 @@ sub user {
     my ($self, $user) = @_;
 
     if ($user) {
-        my $uid = getpwnam($user);
-        die "Error: Couldn't get uid for non-existent user $user\n"
-            unless defined $uid;
+        my $uid = getpwnam($user)
+          or die "Error: Couldn't get uid for non-existent user $user";
 
         $self->{uid} = $uid;
         $self->{user} = $user;
@@ -685,9 +683,8 @@ sub group {
     my ($self, $group) = @_;
 
     if ($group) {
-        my $gid = getgrnam($group);
-        die "Error: Couldn't get gid for non-existent group $group\n"
-            unless defined $gid;
+        my $gid = getgrnam($group)
+          or die "Error: Couldn't get gid for non-existent group $group";
 
         $self->{gid} = $gid;
         $self->{group} = $group;
@@ -742,8 +739,9 @@ sub pretty_print {
 }
 
 sub info { $_[0]->_log('INFO', $_[1]); }
-sub warn { $_[0]->_log('WARN', $_[1]); $_[2] or warn $_[1] . "\n"; }
 sub trace { $ENV{HADC_TRACE} and $_[0]->_log('TRACE', $_[1]); }
+sub warn { $_[0]->_log('WARN', $_[1]); warn $_[1] . "\n"; }
+sub die  { $_[0]->_log('CRIT', $_[1]); die $_[1] . "\n"; }
 
 sub _log {
     my ($self, $level, $message) = @_;
