@@ -27,7 +27,8 @@ foreach my $method (@accessors) {
 }
 
 sub new {
-    my ($class, $args) = @_;
+    my ($class, @in) = @_;
+    my $args = ref $in[0] eq 'HASH' ? $in[0] : { @in };
 
     my $self = bless {
         color_map     => { red => 31, green => 32 },
