@@ -482,7 +482,7 @@ sub _fork {
             my $log_fd = $self->{log_fh} ? fileno($self->{log_fh}) : -1;
             my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
             $max_fd = 64 if !defined $max_fd or $max_fd < 0;
-            $log_fd != $_ and POSIX::close($_) foreach (0 .. $max_fd);
+            $log_fd != $_ and POSIX::close($_) foreach (3 .. $max_fd);
 
             # reopen stad descriptors
             $self->_open_std_filehandles();
@@ -511,13 +511,18 @@ sub _open_std_filehandles {
     # reopening STDIN, STDOUT, STDERR
     open(STDIN, '<', '/dev/null') or $self->die("Failed to open STDIN: $!");
 
-    my $stdout = $self->stdout_file // '/dev/null';
-    open(STDOUT, '>>', $stdout) or $self->die("Failed to open STDOUT to $stdout: $!");
-    $self->trace("STDOUT redirected to $stdout");
+    my $stdout = $self->stdout_file;
+    my $stderr = $self->stderr_file;
 
-    my $stderr = $self->stderr_file // '/dev/null';
-    open(STDERR, '>>', $stderr) or $self->die("Failed to open STDERR to $stderr: $!");
-    $self->trace("STDERR redirected to $stderr");
+    if ($stdout) {
+        open(STDOUT, '>>', $stdout) or $self->die("Failed to open STDOUT to $stdout: $!");
+        $self->trace("STDOUT redirected to $stdout");
+    }
+
+    if ($stderr) {
+        open(STDERR, '>>', $stderr) or $self->die("Failed to open STDERR to $stderr: $!");
+        $self->trace("STDERR redirected to $stderr");
+    }
 }
 
 sub _launch_program {
