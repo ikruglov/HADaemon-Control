@@ -52,6 +52,11 @@ sub new {
 
 sub run {
     my ($self) = @_;
+    return $self->run_command(@ARGV);
+}
+
+sub run_command {
+    my ($self, $arg) = @_;
 
     # Error Checking.
     $self->ipc_cl_options
@@ -106,7 +111,7 @@ sub run {
         chown $self->uid, $self->gid, $self->{log_fh} if $self->uid;
     }
 
-    my $called_with = $ARGV[0] // '';
+    my $called_with = $arg // '';
     $called_with =~ s/^[-]+//g;
 
     my $allowed_actions = join('|', reverse sort $self->_all_actions());
