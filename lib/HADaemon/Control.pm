@@ -929,6 +929,18 @@ as the first arguments.  Your arguments start at $_[1].
 
     $daemon->program_args( [ 'foo', 'bar' ] );
 
+=head2 pid_dir
+
+=head2 ipc_cl_options
+
+=head2 standby_stop_file
+
+=head2 log_file
+
+If set, HADaemon::Control will print its own log to given file. You can also set C<HADC_TRACE> environment variable to get more verbose logs.
+
+=head2 process_name_change
+
 =head2 user
 
 When set, the username supplied to this accessor will be used to set
@@ -1011,6 +1023,12 @@ If this boolean flag is set to a true value all output from the init script
 =head1 INIT FILE CONSTRUCTOR OPTIONS
 
 The constructor also takes the following arguments to generate init file. See L</do_get_init_file>.
+
+=head2 path
+
+The path of the script you are using HADaemon::Control in. This will be used in
+the LSB file generation to point it to the location of the script. If this is
+not provided, the absolute path of $0 will be used.
 
 =head2 init_config
 
@@ -1114,6 +1132,14 @@ Is called when status is given as an argument. Displays the status of the
 program, basic on the PID file. Called by:
 
     /usr/bin/my_program_launcher.pl status
+
+=head2 pretty_print
+
+This is used to display status to the user. It accepts a message and a color.
+It will default to green text, if no color is explicitly given. Only supports
+red and green. If C<HADC_NO_COLORS> environment variable is set no colors are used.
+
+    $daemon->pretty_print( "My Status", "red" );
 
 =head1 AUTHOR
 
