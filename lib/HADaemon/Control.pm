@@ -13,7 +13,7 @@ use IPC::ConcurrencyLimit::WithStandby;
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
-    standby_stop_file uid gid log_file process_name_change called_with
+    standby_stop_file uid gid log_file process_name_change
     path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc
 );
 
@@ -120,7 +120,6 @@ sub run_command {
 
     my $action = "do_$called_with";
     if ($self->can($action)) {
-        $self->{called_with} = $called_with;
         $self->_create_dir($self->pid_dir);
         return $self->$action() // 0;
     }
