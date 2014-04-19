@@ -857,24 +857,53 @@ HADaemon::Control - Create init scripts for Perl high-available (HA) daemons
 =head1 DESCRIPTION
 
 HADaemon::Control provides a library for creating init scripts for HA daemons in perl.
+It allows you to run one or more main processes accompanied by a set of standby processes.
+Standby processes constantly check presence of main ones and if later exits or dies
+promote themselves and replace gone main processes. By doing so, HADaemon::Control
+achieves high-availability and fault tolerance for a service provided by the deamon.
+
 The library takes idea and interface from Daemon::Control and combine them
-with facilities of IPC::ConcurrencyLimit::WithStandby.
-
-While creating the module I was aiming to achieve four goals:
-
-=over 4
-
-=item * starting/stopping/restarting HA daemon with one command
-
-=item * have a clear way of getting status of daemon's processes
-
-=item * minimize downtime during a restart
-
-=item * ability to run module as a cronjob to fork new processes
-
-=back
+with facilities of L<IPC::ConcurrencyLimit::WithStandby>. L<IPC::ConcurrencyLimit::WithStandby>
+implements a mechanism to limit the number of concurrent processes in a cooperative
+multiprocessing environment. For more information refer to the documentation
+of L<IPC::ConcurrencyLimit> and L<IPC::ConcurrencyLimit::WithStandby>
 
 =head1 SYNOPSIS
+
+    #!/usr/bin/env perl
+
+    use strict;
+    use warnings;
+    use HADaemon::Control;
+
+    my $dc = HADaemon::Control->new({
+        name => 'test.pl',
+        user => 'nobody',
+        pid_dir => '/tmp/test',
+        program => sub { sleep 10; },
+        ipc_cl_options => {
+            max_procs => 1,
+            standby_max_procs => 2,
+            retries => sub { 1 },
+        },
+    });
+
+    exit $dc->run();
+
+You can then call the program:
+
+    /usr/bin/my_program_launcher.pl start
+
+By default C<run> will use @ARGV for the action, and exit with an LSB compatible
+exit code. For finer control, you can use C<run_command>, which will return
+the exit code, and accepts the action as an argument.  This enables more programatic
+control, as well as running multiple instances of L<HADaemon::Control> from one script.
+
+    my $dc = HADaemon::Control->new({
+        ...
+    });
+
+    my $exit = $daemon->run_command(“start”);
 
 =head1 CONSTRUCTOR
 
@@ -893,41 +922,130 @@ This should be a coderef of actual programm to run.
 
 =head2 program_args
 
-This is an array ref of the arguments for the program.
+This is an array ref of the arguments for the program. Args will be given to the program
+coderef as @_, the HADaemon::Control instance that called the coderef will be passed
+as the first arguments.  Your arguments start at $_[1].
+
+    $daemon->program_args( [ 'foo', 'bar' ] );
+
+=head2 user
+
+When set, the username supplied to this accessor will be used to set
+the UID attribute. When this is used, C<uid> will be changed from
+its initial settings if you set it (which you shouldn't, since you're
+using usernames instead of UIDs). See L</uid> for setting numerical
+user ids.
+
+    $daemon->user('www-data');
+
+=head2 group
+
+When set, the groupname supplied to this accessor will be used to set
+the GID attribute. When this is used, C<gid> will be changed from
+its initial settings if you set it (which you shouldn't, since you're
+using groupnames instead of GIDs). See L</gid> for setting numerical
+group ids.
+
+    $daemon->group('www-data');
+
+=head2 uid
+
+If provided, the UID that the program will drop to when forked. This will
+only work if you are running as root. Accepts numeric UID. For usernames
+please see L</user>.
+
+    $daemon->uid( 1001 );
+
+=head2 gid
+
+If provided, the GID that the program will drop to when forked. This will
+only work if you are running as root. Accepts numeric GID, for groupnames
+please see L</group>.
+
+    $daemon->gid( 1001 );
+
+=head2 umask
+
+If provided, the umask of the daemon will be set to the umask provided,
+note that the umask must be in oct. By default the umask will not be
+changed.
+
+    $daemon->umask( 022 );
+
+    Or:
+
+    $daemon->umask( oct("022") );
+
+=head2 stdout_file
+
+If provided stdout will be redirected to the given file.
+
+    $daemon->stdout_file( "/tmp/mydaemon.stdout" );
+
+=head2 stderr_file
+
+If provided stderr will be redirected to the given file.
+
+    $daemon->stderr_file( "/tmp/mydaemon.stderr" );
+
+=head2 kill_timeout
+
+This provides an amount of time in seconds between kill signals being
+sent to the daemon. This value should be increased if your daemon has
+a longer shutdown period. By default 1 second is used.
+
+    $daemon->kill_timeout( 7 );
+
 
 =head1 METHODS
 
+=head2 run_command
+
+This function will process an action on the HADaemon::Control instance.
+Valid arguments are those which a C<do_> method exists for, such as 
+B<start>, B<stop>, B<restart>. Returns the LSB exit code for the
+action processed.
+
+=head2 run
+
+This will make your program act as an init file, accepting input from
+the command line. Run will exit with 0 for success and uses LSB exit
+codes. As such no code should be used after ->run is called. Any code
+in your file should be before this. This is a shortcut for 
+
+    exit HADaemon::Control->new(...)->run_command( @ARGV );
+
 =head2 do_start
 
-Is called when start is given as an argument.  Starts the forking and
+Is called when start is given as an argument. Starts the forking and
 exits. Called by:
 
     /usr/bin/my_program_launcher.pl start
 
 =head2 do_stop
 
-Is called when stop is given as an argument.  Stops the running program
+Is called when stop is given as an argument. Stops the running program
 if it can. Called by:
 
-        /usr/bin/my_program_launcher.pl stop
+    /usr/bin/my_program_launcher.pl stop
 
 =head2 do_restart
 
-Is called when restart is given as an argument.  Calls do_stop and do_start.
+Is called when restart is given as an argument. Calls do_stop and do_start.
 Called by:
 
     /usr/bin/my_program_launcher.pl restart
 
 =head2 do_reload
 
-Is called when reload is given as an argument.  Sends a HUP signal to the
+Is called when reload is given as an argument. Sends a HUP signal to the
 daemon.
 
     /usr/bin/my_program_launcher.pl reload
 
 =head2 do_status
 
-Is called when status is given as an argument.  Displays the status of the
+Is called when status is given as an argument. Displays the status of the
 program, basic on the PID file. Called by:
 
     /usr/bin/my_program_launcher.pl status
@@ -938,7 +1056,7 @@ Ivan Kruglov, C<ivan.kruglov@yahoo.com>
 
 =head1 ACKNOWLEDGMENT
 
-This module was inspired from module Daemon::Control.
+This module was inspired by module Daemon::Control.
 
 This module was originally developed for Booking.com.
 With approval from Booking.com, this module was generalized
@@ -947,7 +1065,7 @@ their gratitude.
 
 =head1 COPYRIGHT AND LICENSE
 
-(C) 2013 Ivan Kruglov. All rights reserved.
+(C) 2013, 2014 Ivan Kruglov. All rights reserved.
 
 This code is available under the same license as Perl version
 5.8.1 or higher.
