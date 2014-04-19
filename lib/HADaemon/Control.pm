@@ -861,8 +861,10 @@ It allows you to run one or more main processes accompanied by a set of standby 
 Standby processes constantly check presence of main ones and if later exits or dies
 promote themselves and replace gone main processes. By doing so, HADaemon::Control
 achieves high-availability and fault tolerance for a service provided by the deamon.
+Your perl script just needs to set the accessors for what and how you
+want something to run and the library takes care of the rest.
 
-The library takes idea and interface from Daemon::Control and combine them
+The library takes idea and interface from L<Daemon::Control> and combine them
 with facilities of L<IPC::ConcurrencyLimit::WithStandby>. L<IPC::ConcurrencyLimit::WithStandby>
 implements a mechanism to limit the number of concurrent processes in a cooperative
 multiprocessing environment. For more information refer to the documentation
@@ -976,6 +978,10 @@ changed.
 
     $daemon->umask( oct("022") );
 
+=head2 directory
+
+If provided, chdir to this directory before execution.
+
 =head2 stdout_file
 
 If provided stdout will be redirected to the given file.
@@ -996,6 +1002,66 @@ a longer shutdown period. By default 1 second is used.
 
     $daemon->kill_timeout( 7 );
 
+=head2 quiet
+
+If this boolean flag is set to a true value all output from the init script
+(NOT your daemon) to STDOUT will be suppressed.
+
+    $daemon->quiet( 1 );
+
+=head1 INIT FILE CONSTRUCTOR OPTIONS
+
+The constructor also takes the following arguments to generate init file. See L</do_get_init_file>.
+
+=head2 init_config
+
+The name of the init config file to load. When provided your init script will
+source this file to include the environment variables. This is useful for setting
+a C<PERL5LIB> and such things.
+
+    $daemon->init_config( "/etc/default/my_program" );
+
+    If you are using perlbrew, you probably want to set your init_config to
+    C<$ENV{PERLBREW_ROOT} . '/etc/bashrc'>.
+
+=head2 init_code
+
+When given, whatever text is in this field will be dumped directly into
+the generated init file.
+
+    $daemon->init_code( "Arbitrary code goes here." )
+
+=head2 lsb_start
+
+The value of this string is used for the 'Required-Start' value of
+the generated LSB init script. See L<http://wiki.debian.org/LSBInitScripts>
+for more information.
+
+    $daemon->lsb_start( '$remote_fs $syslog' );
+
+=head2 lsb_stop
+
+The value of this string is used for the 'Required-Stop' value of
+the generated LSB init script. See L<http://wiki.debian.org/LSBInitScripts>
+for more information.
+
+    $daemon->lsb_stop( '$remote_fs $syslog' );
+
+=head2 lsb_sdesc
+
+The value of this string is used for the 'Short-Description' value of
+the generated LSB init script. See L<http://wiki.debian.org/LSBInitScripts>
+for more information.
+
+    $daemon->lsb_sdesc( 'My program...' );
+
+=head2 lsb_desc
+
+The value of this string is used for the 'Description' value of
+the generated LSB init script. See L<http://wiki.debian.org/LSBInitScripts>
+for more information.
+
+    $daemon->lsb_desc( 'My program controls a thing that does a thing.' );
 
 =head1 METHODS
 
