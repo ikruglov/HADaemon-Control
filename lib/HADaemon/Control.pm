@@ -197,6 +197,11 @@ sub do_restart {
         return $self->do_start();
     }
 
+    # another shortcut
+    if ($self->{ipc_cl_options}->{standby_max_procs} <= 0) {
+        return $self->do_hard_restart();
+    }
+
     # stoping standby
     $self->_write_file($self->standby_stop_file);
     if (not $self->_wait_standbys_to_complete()) {
