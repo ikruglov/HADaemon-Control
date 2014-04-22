@@ -255,13 +255,17 @@ sub do_status {
     my ($self) = @_;
     $self->info('do_status()');
 
+    my $exit_code = 0;
     foreach my $type ($self->_expected_main_processes(), $self->_expected_standby_processes()) {
         if ($self->_pid_of_process_type($type)) {
             $self->pretty_print("$type status", 'Running');
         } else {
+            $exit_code = 1;
             $self->pretty_print("$type status", 'Not Running', 'red');
         }
     }
+
+    return $exit_code;
 }
 
 sub do_fork {
