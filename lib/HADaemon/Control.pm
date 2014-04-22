@@ -217,7 +217,7 @@ sub do_restart {
 
     if (!$self->_fork_standbys()) {
         $self->pretty_print('starting standby', 'Failed', 'red');
-        warn "all standby processes should be running at this moment. Can't move forward\n";
+        $self->warn("all standby processes should be running at this moment. Can't move forward");
         return 1;
     }
 
