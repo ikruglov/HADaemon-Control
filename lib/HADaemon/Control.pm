@@ -59,8 +59,6 @@ sub run_command {
     my ($self, $arg) = @_;
 
     # Error Checking.
-    $self->ipc_cl_options
-        or die "Error: ipc_cl_options must be defined\n";
     $self->program && ref $self->program eq 'CODE'
         or die "Error: program must be defined and must be coderef\n";
     $self->name
@@ -76,17 +74,21 @@ sub run_command {
     $self->standby_stop_file
         or $self->standby_stop_file($self->pid_dir . '/standby-stop-file');
 
-    $self->{ipc_cl_options}->{standby_max_procs}
-        and not defined $self->{ipc_cl_options}->{retries}
-            and warn "ipc_cl_options: 'standby_max_procs' defined but 'retries' not";
+    # ipc_cl_options default settings
+    $self->{ipc_cl_options} //= {};
+    $self->{ipc_cl_options}->{type}              //= 'Flock';
+    $self->{ipc_cl_options}->{max_procs}         //= 1;
+    $self->{ipc_cl_options}->{standby_max_procs} //= 1;
+    $self->{ipc_cl_options}->{interval}          //= 1;
+    $self->{ipc_cl_options}->{retries}           //= sub { 1 };
+    $self->{ipc_cl_options}->{path}              //= $self->pid_dir . '/lock/';
+    $self->{ipc_cl_options}->{standby_path}      //= $self->pid_dir . '/lock-standby/';
 
-    ($self->{ipc_cl_options}->{type} //= 'Flock') eq 'Flock'
-        or die "can work only with Flock backend\n";
-
-    $self->{ipc_cl_options}->{path}
-        or $self->{ipc_cl_options}->{path} = $self->pid_dir . '/lock/';
-    $self->{ipc_cl_options}->{standby_path}
-        or $self->{ipc_cl_options}->{standby_path} = $self->pid_dir . '/lock-standby/';
+    # ipc_cl_options error checking
+    $self->{ipc_cl_options}->{type} ne 'Flock'
+        and die "can work only with Flock backend\n";
+    $self->{ipc_cl_options}->{max_procs} < 1
+        and die "ipc_cl_options: 'max_procs' should be at least 1\n";
     $self->{process_name_change}
         and $self->{ipc_cl_options}->{process_name_change} = 1;
 
@@ -912,11 +914,6 @@ of L<IPC::ConcurrencyLimit> and L<IPC::ConcurrencyLimit::WithStandby>
         user => 'nobody',
         pid_dir => '/tmp/test',
         program => sub { sleep 10; },
-        ipc_cl_options => {
-            max_procs => 1,
-            standby_max_procs => 2,
-            retries => sub { 1 },
-        },
     });
 
     exit $dc->run();
@@ -962,6 +959,12 @@ as the first arguments.  Your arguments start at $_[1].
 =head2 pid_dir
 
 =head2 ipc_cl_options
+
+    ipc_cl_options => {
+        max_procs => 1,
+        standby_max_procs => 2,
+        retries => sub { 1 },
+    },
 
 =head2 standby_stop_file
 
