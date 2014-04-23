@@ -67,6 +67,8 @@ sub run_command {
         or die "Error: name must be defined\n";
     $self->pid_dir
         or die "Error: pid_dir must be defined\n";
+    $self->log_file
+        or die "Error: log_file must be defined\n";
 
     defined($self->kill_timeout)
         or $self->kill_timeout(1);
@@ -103,13 +105,10 @@ sub run_command {
         $self->{user_home_dir} = $uiddata[7];
     }
 
-    if ($self->log_file) {
-        open(my $fh, '>>', $self->log_file)
-            or die "failed to open logfile '" . $self->log_file . "': $!\n";
-
-        $self->{log_fh} = $fh;
-        chown $self->uid, $self->gid, $self->{log_fh} if $self->uid;
-    }
+    # init logding
+    open(my $fh, '>>', $self->log_file) or die "failed to open logfile '" . $self->log_file . "': $!\n";
+    chown $self->uid, $self->gid, $fh if $self->uid;
+    $self->{log_fh} = $fh;
 
     my $called_with = $arg // '';
     $called_with =~ s/^[-]+//g;
@@ -119,12 +118,15 @@ sub run_command {
         or die "Must be called with an action: [$allowed_actions]\n";
 
     my $action = "do_$called_with";
-    if ($self->can($action)) {
-        $self->_create_dir($self->pid_dir);
-        return $self->$action() // 0;
-    }
+    $self->can($action)
+        or die "Error: unknown action $called_with. [$allowed_actions]\n";
 
-    die "Error: unknown action $called_with. [$allowed_actions]\n";
+    # precreate directories
+    $self->_create_dir($self->pid_dir);
+    $self->_create_dir($self->{ipc_cl_options}->{path});
+    $self->_create_dir($self->{ipc_cl_options}->{standby_path});
+
+    return $self->$action() // 0;
 }
 
 #####################################
@@ -154,6 +156,7 @@ sub do_start {
     $self->pretty_print('starting main + standby processes', 'Failed', 'red');
     $self->do_status();
     $self->detect_stolen_lock();
+    $self->_print_check_log_file_for_details();
 
     return 1;
 }
@@ -185,6 +188,7 @@ sub do_stop {
 
     $self->pretty_print('stopping main + standby processes', 'Failed', 'red');
     $self->do_status();
+    $self->_print_check_log_file_for_details();
     return 1;
 }
 
@@ -207,6 +211,7 @@ sub do_restart {
     if (not $self->_wait_standbys_to_complete()) {
         $self->pretty_print('stopping standby processes', 'Failed', 'red');
         $self->warn("all standby processes should be stopped at this moment. Can't move forward");
+        $self->_print_check_log_file_for_details();
         return 1;
     }
 
@@ -218,6 +223,7 @@ sub do_restart {
     if (!$self->_fork_standbys()) {
         $self->pretty_print('starting standby', 'Failed', 'red');
         $self->warn("all standby processes should be running at this moment. Can't move forward");
+        $self->_print_check_log_file_for_details();
         return 1;
     }
 
@@ -236,6 +242,7 @@ sub do_restart {
 
         $self->do_status();
         $self->detect_stolen_lock();
+        $self->_print_check_log_file_for_details();
         return 1;
     }
 
@@ -461,6 +468,22 @@ sub _fork {
         $pid2 and $self->trace("forked $pid2");
 
         if ($pid2 == 0) { # Our double fork.
+            # close all file handlers but logging one
+            my $log_fd = fileno($self->{log_fh});
+            my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
+            $max_fd = 64 if !defined $max_fd or $max_fd < 0;
+            $log_fd != $_ and POSIX::close($_) foreach (3 .. $max_fd);
+
+            # reopening STDIN, STDOUT, STDERR and redirect them to log_file
+            # I need to redirect them because otherwise standbys will keep
+            # handles inherited from parent opened for unpredictable amount of time.
+            # When a standby become main, it redirect its STDOUT STDERR to
+            # $self->stdout_file and $self->stderr_file respectively
+            $self->trace("redirect std file handles to " . $self->log_file);
+            open(STDIN, '<', '/dev/null')       or $self->die("Failed to open STDIN: $!");
+            open(STDOUT, '>>', $self->log_file) or $self->die("Failed to open STDOUT to " . $self->log_file . ": $!");
+            open(STDERR, '>>', $self->log_file) or $self->die("Failed to open STDERR to " . $self->log_file . ": $!");
+
             if ($self->gid) {
                 $self->trace("setgid(" . $self->gid . ")");
                 POSIX::setgid($self->gid) or $self->die("failed to setgid: $!");
@@ -477,23 +500,14 @@ sub _fork {
             }
 
             if ($self->umask) {
-                umask($self->umask);
+                umask($self->umask) or $self->warn("failed to umask: $!");
                 $self->trace("umask(" . $self->umask . ")");
             }
 
             if ($self->directory) {
-                chdir($self->directory);
+                chdir($self->directory) or $self->die("failed to chdir to " . $self->directory . ": $!");
                 $self->trace("chdir(" . $self->directory . ")");
             }
-
-            # close all file handlers but logging one
-            my $log_fd = $self->{log_fh} ? fileno($self->{log_fh}) : -1;
-            my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
-            $max_fd = 64 if !defined $max_fd or $max_fd < 0;
-            $log_fd != $_ and POSIX::close($_) foreach (3 .. $max_fd);
-
-            # reopen stad descriptors
-            $self->_open_std_filehandles();
 
             my $res = $self->_launch_program();
             exit($res // 0);
@@ -513,21 +527,17 @@ sub _fork {
     }
 }
 
-sub _open_std_filehandles {
+sub _redirect_std_filehandles {
     my ($self) = @_;
 
-    # reopening STDIN, STDOUT, STDERR
-    open(STDIN, '<', '/dev/null') or $self->die("Failed to open STDIN: $!");
-
     my $stdout = $self->stdout_file;
-    my $stderr = $self->stderr_file;
-
-    if ($stdout) {
+    if ($stdout && $stdout ne $self->log_file) {
         open(STDOUT, '>>', $stdout) or $self->die("Failed to open STDOUT to $stdout: $!");
         $self->trace("STDOUT redirected to $stdout");
     }
 
-    if ($stderr) {
+    my $stderr = $self->stderr_file;
+    if ($stderr && $stderr ne $self->log_file) {
         open(STDERR, '>>', $stderr) or $self->die("Failed to open STDERR to $stderr: $!");
         $self->trace("STDERR redirected to $stderr");
     }
@@ -588,9 +598,15 @@ sub _launch_program {
 
     my $res = 0;
     if (not $self->_check_stop_file()) {
+        # redirect stdou stderr if needed
+        $self->_redirect_std_filehandles();
+
+        # let client be aware of lock fd
         my $lock_fd = $self->_main_lock_fd($ipc);
         $lock_fd and $ENV{HADC_lock_fd} = $lock_fd;
-        $self->{log_fh} and close($self->{log_fh});
+
+        # about to start the app, log_fh is not needed anymore
+        close($self->{log_fh});
 
         my @args = @{ $self->program_args // [] };
         $res = $self->program->($self, @args);
@@ -663,7 +679,7 @@ sub _create_dir {
     if (-d $dir) {
         $self->trace("Dir exists ($dir) - no need to create");
     } else {
-        make_path($dir, { uid => $self->uid, group => $self->gid, error => \my $errors });
+        make_path($dir, { uid => $self->uid, group => $self->gid, mode => 0755, error => \my $errors });
         @$errors and $self->die("failed make_path: " . join(' ', map { keys $_, values $_ } @$errors));
         $self->trace("Created dir ($dir)");
     }
@@ -768,6 +784,11 @@ sub _log {
         printf { $self->{log_fh} } "[%s][%d][%s] %s\n", $date, $$, $level, $message;
         $self->{log_fh}->flush();
     }
+}
+
+sub _print_check_log_file_for_details {
+    my ($self) = @_;
+    printf("check %s for details\n", $self->log_file);
 }
 
 sub _all_actions {
