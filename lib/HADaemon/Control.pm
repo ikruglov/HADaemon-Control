@@ -308,6 +308,12 @@ sub do_get_init_file {
     return $self->_dump_init_script();
 }
 
+sub do_foreground {
+    my ($self) = @_;
+    $self->info('do_foreground()');
+    return $self->_launch_program();
+}
+
 #####################################
 # routines to work with processes
 #####################################
@@ -511,8 +517,10 @@ sub _fork {
                 $self->trace("chdir(" . $self->directory . ")");
             }
 
-            my $res = $self->_launch_program();
-            exit($res // 0);
+            $self->process_name_change
+                and $0 = $self->name;
+
+            exit($self->_acquire_lock_and_launch_program() // 0);
         } elsif (not defined $pid2) {
             $self->warn("cannot fork: $!");
             POSIX::_exit(1);
@@ -545,13 +553,10 @@ sub _redirect_std_filehandles {
     }
 }
 
-sub _launch_program {
+sub _acquire_lock_and_launch_program {
     my ($self) = @_;
-    $self->trace("_launch_program()");
+    $self->trace("_acquire_lock_and_launch_program()");
     return if $self->_check_stop_file();
-
-    $self->process_name_change
-        and $0 = $self->name;
 
     my $pid_file = $self->_build_pid_file("unknown-$$");
     $self->_write_file($pid_file, $$);
@@ -610,12 +615,19 @@ sub _launch_program {
         # about to start the app, log_fh is not needed anymore
         close($self->{log_fh});
 
-        my @args = @{ $self->program_args // [] };
-        $res = $self->program->($self, @args);
+        # start the app
+        $res = $self->_launch_program();
     }
 
     $self->_unlink_file($self->{pid_file});
     return $res // 0;
+}
+
+sub _launch_program {
+    my ($self) = @_;
+    $self->trace("_launch_program()");
+    my @args = @{ $self->program_args // [] };
+    return $self->program->($self, @args);
 }
 
 sub _expected_main_processes {
