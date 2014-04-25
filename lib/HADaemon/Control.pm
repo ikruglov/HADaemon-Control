@@ -107,27 +107,26 @@ sub run_command {
         $self->{user_home_dir} = $uiddata[7];
     }
 
-    # init logding
-    open(my $fh, '>>', $self->log_file) or die "failed to open logfile '" . $self->log_file . "': $!\n";
-    chown $self->uid, $self->gid, $fh if $self->uid;
-    $self->{log_fh} = $fh;
-
     my $called_with = $arg // '';
     $called_with =~ s/^[-]+//g;
 
-    my $allowed_actions = join('|', reverse sort $self->_all_actions());
-    $called_with
-        or die "Must be called with an action: [$allowed_actions]\n";
+    if (!$called_with) {
+        return $self->do_help();
+    }
 
-    my $action = "do_$called_with";
-    $self->can($action)
-        or die "Error: unknown action $called_with. [$allowed_actions]\n";
+    # $self->can() create new record in class hash
+    # so $self->_all_actions includes it as well
+    if (not grep { $_ eq $called_with  } $self->_all_actions) {
+        warn "Error: unknown action $called_with\n";
+        return $self->do_help();
+    }
 
     # precreate directories
     $self->_create_dir($self->pid_dir);
     $self->_create_dir($self->{ipc_cl_options}->{path});
     $self->_create_dir($self->{ipc_cl_options}->{standby_path});
 
+    my $action = "do_$called_with";
     return $self->$action() // 0;
 }
 
@@ -310,8 +309,14 @@ sub do_get_init_file {
 
 sub do_foreground {
     my ($self) = @_;
-    $self->info('do_foreground()');
     return $self->_launch_program();
+}
+
+sub do_help {
+    my ($self) = @_;
+    my $allowed_actions = join('|', reverse sort $self->_all_actions());
+    print "Usage: $0 [$allowed_actions]\n\n";
+    return 0;
 }
 
 #####################################
@@ -786,13 +791,17 @@ sub pretty_print {
     }
 }
 
-sub info { $_[0]->_log('INFO', $_[1]); }
-sub trace { $ENV{HADC_TRACE} and $_[0]->_log('TRACE', $_[1]); }
-sub warn { $_[0]->_log('WARN', $_[1]); warn $_[1] . "\n"; }
-sub die  { $_[0]->_log('CRIT', $_[1]); die $_[1] . "\n"; }
-
 sub _log {
     my ($self, $level, $message) = @_;
+
+    # some commands, such as help|foregournd, don't need loggin
+    # so do lazy initialization
+    if (not exists $self->{log_fh}) {
+        open(my $fh, '>>', $self->log_file) or die "failed to open logfile '" . $self->log_file . "': $!\n";
+        chown $self->uid, $self->gid, $fh if $self->uid;
+        $self->{log_fh} = $fh;
+    }
+
     if ($self->{log_fh} && defined fileno($self->{log_fh})) {
         my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
         printf { $self->{log_fh} } "[%s][%d][%s] %s\n", $date, $$, $level, $message;
@@ -814,6 +823,11 @@ sub _all_actions {
 sub _standby_timeout {
     return int(shift->{ipc_cl_options}->{interval} // 0) + 3;
 }
+
+sub info { $_[0]->_log('INFO', $_[1]); }
+sub trace { $ENV{HADC_TRACE} and $_[0]->_log('TRACE', $_[1]); }
+sub warn { $_[0]->_log('WARN', $_[1]); warn $_[1] . "\n"; }
+sub die  { $_[0]->_log('CRIT', $_[1]); die $_[1] . "\n"; }
 
 #####################################
 # init script logic
