@@ -939,6 +939,7 @@ of L<IPC::ConcurrencyLimit> and L<IPC::ConcurrencyLimit::WithStandby>
         name => 'test.pl',
         user => 'nobody',
         pid_dir => '/tmp/test',
+        log_file => '/tmp/test.log',
         program => sub { sleep 10; },
     });
 
@@ -984,21 +985,62 @@ as the first arguments.  Your arguments start at $_[1].
 
 =head2 pid_dir
 
+This option defines directory where all pidfile will be created
+
+    $daemon->pid_dir('/var/run/my_program_launcher');
+
 =head2 ipc_cl_options
 
+This option gives ability to tune settings of underlying L<IPC::ConcurrencyLimit::WithStandby> object.
+By default HADaemon::Control sets following settings:
+
     ipc_cl_options => {
-        max_procs => 1,
-        standby_max_procs => 2,
-        retries => sub { 1 },
+        type              => 'Flock',                             # the only supported type
+        max_procs         => 1,                                   # one main process
+        standby_max_procs => 1,                                   # one standby process
+        interval          => 1,                                   # stanby tries to acquire main lock every second
+        retries           => sub { 1 },                           # keep retrying forever
+        path              => $daemon->pid_dir . '/lock/',         # path for main locks
+        standby_path      => $daemon->pid_dir . '/lock-standby/', # path for standby locks
     },
 
 =head2 standby_stop_file
 
+The path to stop file for stanby process. See C<do_start>, C<do_stop>, C<do_restart> for details. By defuls is set to:
+
+    $daemon->standby_stop_file($daemon->pid_dir . '/standby-stop-file');
+
 =head2 log_file
 
-If set, HADaemon::Control will print its own log to given file. You can also set C<HADC_TRACE> environment variable to get more verbose logs.
+HADaemon::Control uses C<log_file> for two purposes:
+
+=over 4
+
+=item * HADaemon::Control redirects STDOUT and STDERR for forked processes to given file
+
+=item * HADaemon::Control prints its own log to given file
+
+=back
+
+If you don't want to mix logs of the application and init script consider using C<stdout_file> and C<stderr_file>.
+Verbosity of logs of HADaemon::Control can be controled by C<HADC_TRACE> environment variable.
 
 =head2 process_name_change
+
+If set, HADaemon::Control will set name of the process to C<name>. Also, it adds process_name_change option into C<ipc_cl_options>.
+As result, C<process_name_change> makes nice names for both main and standby processes. For example:
+
+    my $dc = HADaemon::Control->new({
+        name => 'My test daemon',
+        pid_dir => '/tmp/test',
+        log_file => '/tmp/test.log',
+        program => sub { sleep 10; },
+        process_name_change => 1,
+    });
+
+leads to:
+    My test daemon              # name of main process
+    My test daemon - standby    # name of standby process
 
 =head2 user
 
@@ -1054,13 +1096,13 @@ If provided, chdir to this directory before execution.
 
 =head2 stdout_file
 
-If provided stdout will be redirected to the given file.
+If provided stdout of main process will be redirected to the given file.
 
     $daemon->stdout_file( "/tmp/mydaemon.stdout" );
 
 =head2 stderr_file
 
-If provided stderr will be redirected to the given file.
+If provided stderr of main process will be redirected to the given file.
 
     $daemon->stderr_file( "/tmp/mydaemon.stderr" );
 
