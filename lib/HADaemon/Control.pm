@@ -1039,6 +1039,7 @@ As result, C<process_name_change> makes nice names for both main and standby pro
     });
 
 leads to:
+
     My test daemon              # name of main process
     My test daemon - standby    # name of standby process
 
