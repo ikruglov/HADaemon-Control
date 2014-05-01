@@ -966,8 +966,8 @@ The constructor takes the following arguments.
 
 =head2 name
 
-The name of the program the daemon is controlling.  This will be used in
-status messages "name [Started]"
+The name of the program the daemon is controlling. This will be used in status messages.
+See also C<process_name_change>.
 
 =head2 program
 
