@@ -13,7 +13,7 @@ use IPC::ConcurrencyLimit::WithStandby;
 my @accessors = qw(
     pid_dir quiet color_map name kill_timeout program program_args
     stdout_file stderr_file umask directory ipc_cl_options
-    standby_stop_file uid gid log_file process_name_change
+    main_stop_file standby_stop_file uid gid log_file process_name_change
     path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc
 );
 
@@ -230,9 +230,13 @@ sub do_restart {
 
     $self->pretty_print('starting standby processes', 'OK');
 
-    # restarting mains and standbys
+    # killing mains, stanbys should be promoted instantly
     foreach my $type ($self->_expected_main_processes()) {
-        $self->_restart_main($type)
+        my $pid = $self->_pid_of_process_type($type)
+          or $self->trace("Main process $type is not running"),
+            next;
+
+        $self->_kill_pid($pid)
             or $self->pretty_print($type, 'Failed to restart', 'red');
     }
 
@@ -392,6 +396,25 @@ sub _kill_pid {
     my ($self, $pid) = @_;
     $self->trace("_kill_pid(): $pid");
 
+    if ($self->main_stop_file) {
+        # main_stop_file is defined, try to touch it
+        my $stop_file_name = $self->_build_main_stop_file($pid);
+        $self->_write_file($stop_file_name);
+
+        for (1 .. $self->kill_timeout) {
+            if (not $self->_pid_running($pid)) {
+                $self->trace("Successfully killed $pid via stop file");
+                $self->_unlink_file($stop_file_name);
+                return 1;
+            }
+
+            sleep 1;
+        }
+
+        $self->info("Failed to kill process $pid via stop file");
+        $self->_unlink_file($stop_file_name);
+    }
+
     foreach my $signal (qw(TERM TERM INT KILL)) {
         $self->trace("Sending $signal signal to pid $pid...");
         $self->_kill_or_die($signal, $pid);
@@ -407,36 +430,6 @@ sub _kill_pid {
     }
 
     $self->trace("Failed to kill $pid");
-    return 0;
-}
-
-sub _restart_main {
-    my ($self, $type) = @_;
-    $self->trace("_restart_main(): $type");
-
-    my $pid = $self->_pid_of_process_type($type);
-    if (not $pid) {
-        $self->trace("Main process $type is not running");
-        return 1;
-    }
-
-    foreach my $signal (qw(TERM TERM INT KILL)) {
-        $self->trace("Sending $signal signal to pid $pid...");
-        $self->_kill_or_die($signal, $pid);
-
-        # wait until pid change
-        for (1 .. $self->kill_timeout) {
-            my $new_pid = $self->_pid_of_process_type($type);
-            if ($new_pid && $pid != $new_pid) {
-                $self->trace("Successfully restarted main $type");
-                return 1;
-            }
-
-            sleep 1;
-        }
-    }
-
-    $self->trace("Failed to restart main $type");
     return 0;
 }
 
@@ -657,6 +650,11 @@ sub _build_pid_file {
     return $self->pid_dir . "/$type.pid";
 }
 
+sub _build_main_stop_file {
+    my ($self, $pid) = @_;
+    return ($self->main_stop_file =~ s/%p/$pid/gr);
+}
+
 sub _read_file {
     my ($self, $file) = @_;
     return undef unless -f $file;
@@ -707,7 +705,7 @@ sub _create_dir {
 sub _check_stop_file {
     my $self = shift;
     if (-f $self->standby_stop_file()) {
-        $self->info('stop file detected');
+        $self->info('standby stop file detected');
         return 1;
     } else {
         return 0;
