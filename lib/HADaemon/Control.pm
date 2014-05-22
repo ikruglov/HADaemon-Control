@@ -121,11 +121,6 @@ sub run_command {
         return $self->do_help();
     }
 
-    # precreate directories
-    $self->_create_dir($self->pid_dir);
-    $self->_create_dir($self->{ipc_cl_options}->{path});
-    $self->_create_dir($self->{ipc_cl_options}->{standby_path});
-
     my $action = "do_$called_with";
     return $self->$action() // 0;
 }
@@ -136,6 +131,7 @@ sub run_command {
 sub do_start {
     my ($self) = @_;
     $self->info('do_start()');
+    $self->_precreate_directories();
 
     my $expected_main = $self->_expected_main_processes();
     my $expected_standby = $self->_expected_standby_processes();
@@ -165,6 +161,7 @@ sub do_start {
 sub do_stop {
     my ($self) = @_;
     $self->info('do_stop()');
+    $self->_precreate_directories();
 
     if (!$self->_main_running() && !$self->_standby_running()) {
         $self->pretty_print('stopping main + standby processes', 'Not Running', 'red');
@@ -196,6 +193,7 @@ sub do_stop {
 sub do_restart {
     my ($self) = @_;
     $self->info('do_restart()');
+    $self->_precreate_directories();
 
     # shortcut
     if (!$self->_main_running() && !$self->_standby_running()) {
@@ -283,6 +281,8 @@ sub do_status {
 sub do_fork {
     my ($self) = @_;
     $self->info('do_fork()');
+    $self->_precreate_directories();
+
     return 1 if $self->_check_stop_file();
 
     $self->_fork_mains();
@@ -700,6 +700,13 @@ sub _create_dir {
         @$errors and $self->die("failed make_path: " . join(' ', map { keys $_, values $_ } @$errors));
         $self->trace("Created dir ($dir)");
     }
+}
+
+sub _precreate_directories {
+    my ($self) = @_;
+    $self->_create_dir($self->pid_dir);
+    $self->_create_dir($self->{ipc_cl_options}->{path});
+    $self->_create_dir($self->{ipc_cl_options}->{standby_path});
 }
 
 sub _check_stop_file {
