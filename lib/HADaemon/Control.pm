@@ -803,7 +803,7 @@ sub _log {
     # so do lazy initialization
     if (not exists $self->{log_fh}) {
         open(my $fh, '>>', $self->log_file) or die "failed to open logfile '" . $self->log_file . "': $!\n";
-        chown $self->uid, $self->gid, $fh if $self->uid;
+        chown(($self->uid // -1), ($self->gid // -1), $fh) if $self->uid || $self->gid;
         $self->{log_fh} = $fh;
     }
 
