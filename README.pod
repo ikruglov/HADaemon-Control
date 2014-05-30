@@ -409,7 +409,7 @@ Ivan Kruglov, C<ivan.kruglov@yahoo.com>
 
 =head1 ACKNOWLEDGMENT
 
-This module was inspired by module Daemon::Control.
+This module was inspired by module L<Daemon::Control|https://github.com/symkat/Daemon-Control>.
 
 This module was originally developed for Booking.com.
 With approval from Booking.com, this module was generalized
