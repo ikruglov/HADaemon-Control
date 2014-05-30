@@ -1010,9 +1010,16 @@ By default HADaemon::Control sets following settings:
         standby_path      => $daemon->pid_dir . '/lock-standby/', # path for standby locks
     },
 
+=head2 main_stop_file
+
+This option provides an alternative way of stopping main processes apart of sending a signal (ex. TERM). If specified,
+HADaemon::Control touch this file and wait L<kill_timeout> seconds hoping that main processes will respect the file
+and exit. If not, normal termination loop is entered (i.e. sending sequence of signals TERM TERM INT KILL).
+The filename can include %p which is replaced by PID of a process. Default value is undef.
+
 =head2 standby_stop_file
 
-The path to stop file for stanby process. See C<do_start>, C<do_stop>, C<do_restart> for details. By defuls is set to:
+The path to stop file for standby process. See C<do_start>, C<do_stop>, C<do_restart> for details. By default is set to:
 
     $daemon->standby_stop_file($daemon->pid_dir . '/standby-stop-file');
 
@@ -1209,37 +1216,97 @@ in your file should be before this. This is a shortcut for
 =head2 do_start
 
 Is called when start is given as an argument. Starts the forking and
-exits. Called by:
+exits. The forking includes starting C<ipc_cl_options->{max_procs}> main and
+C<ipc_cl_options->{standby_max_procs}> standby processes. Exit with success
+only if all processes were spawned. Called by:
 
     /usr/bin/my_program_launcher.pl start
 
 =head2 do_stop
 
-Is called when stop is given as an argument. Stops the running program
-if it can. Called by:
+Is called when stop is given as an argument. Stops the all running proceses
+which belongs to the daemon if it can. Stopping is done via:
+
+=over 4
+
+=item * touching C<standby_stop_file> file to stop standby processes and prevent
+new proceses to be started via C<do_fork> command.
+
+=item * if C<main_stop_file> specified, touch it to stop main processes. See L<main_stop_file>.
+
+=item * send "TERM TERM INT KILL" sequence of signals to kill main processes
+
+=back
+
+Called by:
 
     /usr/bin/my_program_launcher.pl stop
 
 =head2 do_restart
 
-Is called when restart is given as an argument. Calls do_stop and do_start.
+Is called when restart is given as an argument. This command triggers restart cycle which
+includes several steps:
+
+=over 4
+
+=item * stop all standby daemons by touching C<standby_stop_file>
+
+=item * start new instances of standby processes
+
+=item * kill main processes one by one. Once a main processes is dead, running standby immediately
+become main one hence minimize downtime to C<ipc_cl_options->{interval}> seconds (or miliseconds).
+
+=item * again start standby processes to compensate the lost of standby processes
+
+=back
+
 Called by:
 
     /usr/bin/my_program_launcher.pl restart
 
+=head2 do_hard_restart
+
+Is called when hard_restart is given as an argument. Calls C<do_stop> and C<do_start>.
+Called by:
+
+    /usr/bin/my_program_launcher.pl hard_restart
+
+=head2 do_fork
+
+Is called when fork is given as an argument. This command is almost equal to L<do_start>,
+but is design for periodical run in a cronjob. Called by:
+
+    /usr/bin/my_program_launcher.pl fork
+
 =head2 do_reload
 
 Is called when reload is given as an argument. Sends a HUP signal to the
-daemon.
+main processes.
 
     /usr/bin/my_program_launcher.pl reload
 
 =head2 do_status
 
-Is called when status is given as an argument. Displays the status of the
-program, basic on the PID file. Called by:
+Is called when status is given as an argument. Displays the statuses of the
+program (i.e. all running processes), basic on the PID files. Called by:
 
     /usr/bin/my_program_launcher.pl status
+
+=head2 do_foreground
+
+Is called when B<foreground> is given as an argument. Starts the
+program or code reference and stays in the foreground -- no forking
+and locking is done, regardless of the compile-time arguments.
+Additionally, turns C<quiet> on to avoid showing L<Daemon::Control> output.
+
+    /usr/bin/my_program_launcher.pl foreground
+
+=head2 do_get_init_file
+
+Is called when get_init_file is given as an argument. Dumps an LSB
+compatible init file, for use in /etc/init.d/. Called by:
+
+    /usr/bin/my_program_launcher.pl get_init_file
 
 =head2 pretty_print
 
