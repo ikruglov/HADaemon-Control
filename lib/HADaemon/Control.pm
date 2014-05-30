@@ -1297,7 +1297,7 @@ program (i.e. all running processes), basic on the PID files. Called by:
 Is called when B<foreground> is given as an argument. Starts the
 program or code reference and stays in the foreground -- no forking
 and locking is done, regardless of the compile-time arguments.
-Additionally, turns C<quiet> on to avoid showing L<Daemon::Control> output.
+Additionally, turns C<quiet> on to avoid showing L<HADaemon::Control> output.
 
     /usr/bin/my_program_launcher.pl foreground
 
