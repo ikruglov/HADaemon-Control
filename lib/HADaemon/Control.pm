@@ -313,6 +313,7 @@ sub do_get_init_file {
 
 sub do_foreground {
     my ($self) = @_;
+    $self->quiet(1);
     return $self->_launch_program();
 }
 
