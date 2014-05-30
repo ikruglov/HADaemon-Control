@@ -1,5 +1,6 @@
 package HADaemon::Control;
 
+use v5.14;
 use strict;
 use warnings;
 
@@ -8,6 +9,8 @@ use Cwd qw(abs_path);
 use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
+
+our $VERSION = '0.5';
 
 # Accessor building
 my @accessors = qw(
