@@ -135,7 +135,6 @@ sub run_command {
 sub do_start {
     my ($self) = @_;
     $self->info('do_start()');
-    $self->_precreate_directories();
 
     my $expected_main = $self->_expected_main_processes();
     my $expected_standby = $self->_expected_standby_processes();
@@ -147,6 +146,7 @@ sub do_start {
         return 0;
     }
 
+    $self->_precreate_directories();
     $self->_unlink_file($self->standby_stop_file);
 
     if ($self->_fork_mains() && $self->_fork_standbys()) {
@@ -165,7 +165,6 @@ sub do_start {
 sub do_stop {
     my ($self) = @_;
     $self->info('do_stop()');
-    $self->_precreate_directories();
 
     if (!$self->_main_running() && !$self->_standby_running()) {
         $self->pretty_print('stopping main + standby processes', 'Not Running', 'red');
@@ -173,6 +172,7 @@ sub do_stop {
         return 0;
     }
 
+    $self->_precreate_directories();
     $self->_write_file($self->standby_stop_file);
     $self->_wait_standbys_to_complete();
 
@@ -197,7 +197,6 @@ sub do_stop {
 sub do_restart {
     my ($self) = @_;
     $self->info('do_restart()');
-    $self->_precreate_directories();
 
     # shortcut
     if (!$self->_main_running() && !$self->_standby_running()) {
@@ -210,7 +209,9 @@ sub do_restart {
     }
 
     # stoping standby
+    $self->_precreate_directories();
     $self->_write_file($self->standby_stop_file);
+
     if (not $self->_wait_standbys_to_complete()) {
         $self->pretty_print('stopping standby processes', 'Failed', 'red');
         $self->warn("all standby processes should be stopped at this moment. Can't move forward");
@@ -285,12 +286,13 @@ sub do_status {
 sub do_fork {
     my ($self) = @_;
     $self->info('do_fork()');
-    $self->_precreate_directories();
 
     return 1 if $self->_check_stop_file();
 
+    $self->_precreate_directories();
     $self->_fork_mains();
     $self->_fork_standbys();
+
     return 0;
 }
 
