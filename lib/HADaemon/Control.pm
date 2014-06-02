@@ -5,6 +5,7 @@ use strict;
 use warnings;
 
 use POSIX ();
+use Time::HiRes;
 use Cwd qw(abs_path);
 use File::Path qw(make_path);
 use Scalar::Util qw(weaken);
@@ -338,9 +339,10 @@ sub _fork_mains {
         my $to_start = $expected_main - $self->_main_running();
         $self->_fork() foreach (1 .. $to_start);
 
-        for (1 .. $self->_standby_timeout) {
+        my $end = Time::HiRes::time + $self->_standby_timeout;
+        while (Time::HiRes::time < $end) {
             return 1 if $self->_main_running() == $expected_main;
-            sleep(1);
+            Time::HiRes::sleep(0.1);
         }
     }
 
@@ -355,9 +357,10 @@ sub _fork_standbys {
         my $to_start = $expected_standby - $self->_standby_running();
         $self->_fork() foreach (1 .. $to_start);
 
-        for (1 .. $self->_standby_timeout) {
+        my $end = Time::HiRes::time + $self->_standby_timeout;
+        while (Time::HiRes::time < $end) {
             return 1 if $self->_standby_running() == $expected_standby;
-            sleep(1);
+            Time::HiRes::sleep(0.1);
         }
     }
 
@@ -405,14 +408,15 @@ sub _kill_pid {
         my $stop_file_name = $self->_build_main_stop_file($pid);
         $self->_write_file($stop_file_name);
 
-        for (1 .. $self->kill_timeout) {
+        my $end = Time::HiRes::time + $self->kill_timeout;
+        while (Time::HiRes::time < $end) {
             if (not $self->_pid_running($pid)) {
                 $self->trace("Successfully killed $pid via stop file");
                 $self->_unlink_file($stop_file_name);
                 return 1;
             }
 
-            sleep 1;
+            Time::HiRes::sleep(0.1);
         }
 
         $self->info("Failed to kill process $pid via stop file");
@@ -423,13 +427,14 @@ sub _kill_pid {
         $self->trace("Sending $signal signal to pid $pid...");
         $self->_kill_or_die($signal, $pid);
 
-        for (1 .. $self->kill_timeout) {
+        my $end = Time::HiRes::time + $self->kill_timeout;
+        while (Time::HiRes::time < $end) {
             if (not $self->_pid_running($pid)) {
                 $self->trace("Successfully killed $pid");
                 return 1;
             }
 
-            sleep 1;
+            Time::HiRes::sleep(0.1);
         }
     }
 
@@ -454,9 +459,10 @@ sub _wait_standbys_to_complete {
     my ($self) = @_;
     $self->trace('_wait_all_standbys_to_complete()');
 
-    for (1 .. $self->_standby_timeout) {
+    my $end = Time::HiRes::time + $self->_standby_timeout;
+    while (Time::HiRes::time < $end) {
         return 1 if $self->_standby_running() == 0;
-        sleep(1);
+        Time::HiRes::sleep(0.1);
     }
 
     return 0;
@@ -830,7 +836,8 @@ sub _all_actions {
 }
 
 sub _standby_timeout {
-    return int(shift->{ipc_cl_options}->{interval} // 0) + 3;
+    my $timeout = int(shift->{ipc_cl_options}->{interval} // 0) * 3;
+    return $timeout < 1 ? 1 : $timeout;
 }
 
 sub info { $_[0]->_log('INFO', $_[1]); }
