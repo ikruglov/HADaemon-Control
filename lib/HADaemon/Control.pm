@@ -708,7 +708,15 @@ sub _create_dir {
     if (-d $dir) {
         $self->trace("Dir exists ($dir) - no need to create");
     } else {
-        make_path($dir, { uid => $self->uid, group => $self->gid, mode => 0755, error => \my $errors });
+        my $make_path_args = { mode => 0755, error => \my $errors };
+        if ($self->uid) {
+            $make_path_args->{uid} = $self->uid;
+        }
+        if ($self->gid) {
+            $make_path_args->{group} = $self->gid;
+        }
+
+        make_path($dir, $make_path_args);
         @$errors and $self->die("failed make_path: " . join(' ', map { keys $_, values $_ } @$errors));
         $self->trace("Created dir ($dir)");
     }
