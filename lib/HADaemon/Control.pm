@@ -607,6 +607,8 @@ sub _acquire_lock_and_launch_program {
     }
 
     $self->info("acquired main lock id: " . $ipc->lock_id());
+
+    $self->{ipc_cl_lock_id} = $ipc->lock_id;
     
     # now pid file should be 'main-$id'
     $pid_file = $self->_build_pid_file("main-$id");
