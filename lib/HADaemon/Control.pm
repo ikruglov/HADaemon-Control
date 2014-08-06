@@ -710,7 +710,7 @@ sub _create_dir {
     } else {
         my $make_path_args = { mode => 0755, error => \my $errors };
         if ($self->uid) {
-            $make_path_args->{uid} = $self->uid;
+            $make_path_args->{user} = $self->uid;
         }
         if ($self->gid) {
             $make_path_args->{group} = $self->gid;
