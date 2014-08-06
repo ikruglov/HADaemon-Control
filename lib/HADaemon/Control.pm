@@ -8,6 +8,7 @@ use POSIX ();
 use Time::HiRes;
 use Cwd qw(abs_path);
 use File::Path qw(make_path);
+use File::Basename qw(dirname);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
 
@@ -729,6 +730,13 @@ sub _precreate_directories {
     $self->_create_dir($self->pid_dir);
     $self->_create_dir($self->{ipc_cl_options}->{path});
     $self->_create_dir($self->{ipc_cl_options}->{standby_path});
+
+    if ($self->{main_stop_file}) {
+        $self->_create_dir(dirname($self->{main_stop_file}));
+    }
+    if ($self->{standby_stop_file}) {
+        $self->_create_dir(dirname($self->{standby_stop_file}));
+    }
 }
 
 sub _check_stop_file {
