@@ -16,8 +16,8 @@ our $VERSION = '0.5';
 
 # Accessor building
 my @accessors = qw(
-    pid_dir quiet color_map name kill_timeout program program_args
-    stdout_file stderr_file umask directory ipc_cl_options
+    pid_dir quiet color_map name stop_file_kill_timeout signal_kill_timeout kill_timeout
+    program program_args stdout_file stderr_file umask directory ipc_cl_options
     main_stop_file standby_stop_file uid gid log_file process_name_change
     path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc
 );
@@ -406,12 +406,15 @@ sub _kill_pid {
     my ($self, $pid) = @_;
     $self->trace("_kill_pid(): $pid");
 
+    my $stop_file_timeout = $self->stop_file_kill_timeout // $self->kill_timeout;
+    my $signal_timeout    = $self->signal_kill_timeout    // $self->kill_timeout;
+
     if ($self->main_stop_file) {
         # main_stop_file is defined, try to touch it
         my $stop_file_name = $self->_build_main_stop_file($pid);
         $self->_write_file($stop_file_name);
 
-        my $end = Time::HiRes::time + $self->kill_timeout;
+        my $end = Time::HiRes::time + $stop_file_timeout;
         while (Time::HiRes::time < $end) {
             if (not $self->_pid_running($pid)) {
                 $self->trace("Successfully killed $pid via stop file");
@@ -430,7 +433,7 @@ sub _kill_pid {
         $self->trace("Sending $signal signal to pid $pid...");
         $self->_kill_or_die($signal, $pid);
 
-        my $end = Time::HiRes::time + $self->kill_timeout;
+        my $end = Time::HiRes::time + $signal_timeout;
         while (Time::HiRes::time < $end) {
             if (not $self->_pid_running($pid)) {
                 $self->trace("Successfully killed $pid");
@@ -1043,7 +1046,7 @@ By default HADaemon::Control sets following settings:
 =head2 main_stop_file
 
 This option provides an alternative way of stopping main processes apart of sending a signal (ex. TERM). If specified,
-HADaemon::Control touch this file and wait L<kill_timeout> seconds hoping that main processes will respect the file
+HADaemon::Control touch this file and wait L<stop_file_kill_timeout> or L<kill_timeout> seconds hoping that main processes will respect the file
 and exit. If not, normal termination loop is entered (i.e. sending sequence of signals TERM TERM INT KILL).
 The filename can include %p which is replaced by PID of a process. Default value is undef.
 
@@ -1152,11 +1155,31 @@ If provided stderr of main process will be redirected to the given file.
 
 =head2 kill_timeout
 
-This provides an amount of time in seconds between kill signals being
-sent to the daemon. This value should be increased if your daemon has
+This provides an amount of time in seconds between trying different means
+of terminating the daemon. This value should be increased if your daemon has
 a longer shutdown period. By default 1 second is used.
 
     $daemon->kill_timeout( 7 );
+
+This value is used both for stop files and signals.
+
+=head2 stop_file_kill_timeout
+
+This is a more specific variant of L<kill_timeout>. It provides the amount of seconds
+we allow the daemon to terminate itself once a stop file has been created.
+
+If provided, this value has priority over L<kill_timeout>.
+
+    $daemon->stop_file_kill_timeout( 42 );
+
+=head2 signal_kill_timeout
+
+This is a more specific variant of L<kill_timeout>. It provides the amount of seconds
+between firing different signals to terminate the daemon.
+
+If provided, this value has priority over L<kill_timeout>.
+
+    $daemon->signal_kill_timeout( 42 );
 
 =head2 quiet
 
