@@ -1371,15 +1371,15 @@ red and green. If C<HADC_NO_COLORS> environment variable is set no colors are us
 
 =head1 KNOWN ISSUES
 
-HADaemon::Control uses C<flock> based locks. This type of locks have property to get
+HADaemon::Control uses C<flock> based locks. This type of locks have property of getting
 inherited accross C<fork> system call. This behavior is not desirable and actually
 destructible for HADaemon::Control. Once the locked is inherited, two processes
-(parent and child) will own the same lock. Only relasing the lock from both processes
+(parent and child) will own the same lock. Only releasing the lock from both processes
 allows another one to acuire the lock. To prevent such behivour HADaemon::Control exposes
 lock's file descriptor via HADC_lock_fd environment variable.
 
 If an application forks, a child process should close lock's file descriptor right after
-exiting from C<fork> syscal. One of the possible ways is ro run:
+exiting from C<fork> syscal. One of the possible ways is to run:
 
     $ENV{HADC_lock_fd} and POSIX::close($ENV{HADC_lock_fd});
 
