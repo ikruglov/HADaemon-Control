@@ -100,7 +100,7 @@ By default HADaemon::Control sets following settings:
 =head2 main_stop_file
 
 This option provides an alternative way of stopping main processes apart of sending a signal (ex. TERM). If specified,
-HADaemon::Control touch this file and wait L<kill_timeout> seconds hoping that main processes will respect the file
+HADaemon::Control touch this file and wait L<stop_file_kill_timeout> or L<kill_timeout> seconds hoping that main processes will respect the file
 and exit. If not, normal termination loop is entered (i.e. sending sequence of signals TERM TERM INT KILL).
 The filename can include %p which is replaced by PID of a process. Default value is undef.
 
@@ -209,11 +209,31 @@ If provided stderr of main process will be redirected to the given file.
 
 =head2 kill_timeout
 
-This provides an amount of time in seconds between kill signals being
-sent to the daemon. This value should be increased if your daemon has
+This provides an amount of time in seconds between trying different means
+of terminating the daemon. This value should be increased if your daemon has
 a longer shutdown period. By default 1 second is used.
 
     $daemon->kill_timeout( 7 );
+
+This value is used both for stop files and signals.
+
+=head2 stop_file_kill_timeout
+
+This is a more specific variant of L<kill_timeout>. It provides the amount of seconds
+we allow the daemon to terminate itself once a stop file has been created.
+
+If provided, this value has priority over L<kill_timeout>.
+
+    $daemon->stop_file_kill_timeout( 42 );
+
+=head2 signal_kill_timeout
+
+This is a more specific variant of L<kill_timeout>. It provides the amount of seconds
+between firing different signals to terminate the daemon.
+
+If provided, this value has priority over L<kill_timeout>.
+
+    $daemon->signal_kill_timeout( 42 );
 
 =head2 quiet
 
@@ -405,15 +425,15 @@ red and green. If C<HADC_NO_COLORS> environment variable is set no colors are us
 
 =head1 KNOWN ISSUES
 
-HADaemon::Control uses C<flock> based locks. This type of locks have property to get
+HADaemon::Control uses C<flock> based locks. This type of locks have property of getting
 inherited accross C<fork> system call. This behavior is not desirable and actually
 destructible for HADaemon::Control. Once the locked is inherited, two processes
-(parent and child) will own the same lock. Only relasing the lock from both processes
-allows another one to acuire the lock. To prevent such behivour exposes lock's file descriptor
-via HADC_lock_fd environment variable.
+(parent and child) will own the same lock. Only releasing the lock from both processes
+allows another one to acuire the lock. To prevent such behivour HADaemon::Control exposes
+lock's file descriptor via HADC_lock_fd environment variable.
 
 If an application forks, a child process should close lock's file descriptor right after
-exiting from C<fork> syscal. One of the possible ways is ro run:
+exiting from C<fork> syscal. One of the possible ways is to run:
 
     $ENV{HADC_lock_fd} and POSIX::close($ENV{HADC_lock_fd});
 
@@ -421,6 +441,10 @@ exiting from C<fork> syscal. One of the possible ways is ro run:
 =head1 AUTHOR
 
 Ivan Kruglov, C<ivan.kruglov@yahoo.com>
+
+=head1 CONTRIBUTORS
+
+Alexey Surikov C<alexey.surikov@booking.com>
 
 =head1 ACKNOWLEDGMENT
 
