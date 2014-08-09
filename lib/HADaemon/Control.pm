@@ -1388,6 +1388,10 @@ exiting from C<fork> syscal. One of the possible ways is ro run:
 
 Ivan Kruglov, C<ivan.kruglov@yahoo.com>
 
+=head1 CONTRIBUTORS
+
+Alexey Surikov C<alexey.surikov@booking.com>
+
 =head1 ACKNOWLEDGMENT
 
 This module was inspired by module L<Daemon::Control|https://github.com/symkat/Daemon-Control>.
