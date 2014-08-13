@@ -17,7 +17,7 @@ our $VERSION = '0.5';
 # Accessor building
 my @accessors = qw(
     pid_dir quiet color_map name stop_file_kill_timeout signal_kill_timeout kill_timeout
-    program program_args stdout_file stderr_file umask directory ipc_cl_options
+    stop_signals program program_args stdout_file stderr_file umask directory ipc_cl_options
     main_stop_file standby_stop_file uid gid log_file process_name_change
     path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc
 );
@@ -429,7 +429,9 @@ sub _kill_pid {
         $self->_unlink_file($stop_file_name);
     }
 
-    foreach my $signal (qw(TERM TERM INT KILL)) {
+    my @stop_signals = @{ $self->stop_signals // [qw(TERM TERM INT KILL)] };
+
+    foreach my $signal (@stop_signals) {
         $self->trace("Sending $signal signal to pid $pid...");
         $self->_kill_or_die($signal, $pid);
 
@@ -1055,6 +1057,10 @@ The filename can include %p which is replaced by PID of a process. Default value
 The path to stop file for standby process. See C<do_start>, C<do_stop>, C<do_restart> for details. By default is set to:
 
     $daemon->standby_stop_file($daemon->pid_dir . '/standby-stop-file');
+
+=head2 stop_signals
+
+An array ref of signals that should be tried (in order) when stopping the daemon. Default signals are C<TERM>, C<TERM>, C<INT> and C<KILL> (yes, C<TERM> is tried twice).
 
 =head2 log_file
 
