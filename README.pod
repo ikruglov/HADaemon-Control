@@ -110,6 +110,10 @@ The path to stop file for standby process. See C<do_start>, C<do_stop>, C<do_res
 
     $daemon->standby_stop_file($daemon->pid_dir . '/standby-stop-file');
 
+=head2 stop_signals
+
+An array ref of signals that should be tried (in order) when stopping the daemon. Default signals are C<TERM>, C<TERM>, C<INT> and C<KILL> (yes, C<TERM> is tried twice).
+
 =head2 log_file
 
 HADaemon::Control uses C<log_file> for two purposes:
