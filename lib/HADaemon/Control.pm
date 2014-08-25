@@ -177,9 +177,15 @@ sub do_stop {
     $self->_write_file($self->standby_stop_file);
     $self->_wait_standbys_to_complete();
 
-    foreach my $type ($self->_expected_main_processes()) {
-        my $pid = $self->_pid_of_process_type($type);
-        if ($pid && $self->_kill_pid($pid)) {
+    my %mains = map {
+        $_ => $self->_pid_of_process_type($_)
+    } $self->_expected_main_processes();
+
+    my %running_pids = $self->_kill_pids(values %mains);
+
+    foreach my $type (%mains) {
+        my $pid = $mains{$type};
+        if ($pid && !exists $running_pids{$pid}) {
             $self->_unlink_file($self->_build_pid_file($type));
         }
     }
@@ -234,14 +240,24 @@ sub do_restart {
 
     $self->pretty_print('starting standby processes', 'OK');
 
-    # killing mains, stanbys should be promoted instantly
-    foreach my $type ($self->_expected_main_processes()) {
+    my %mains = map {
+        my $type = $_;
         my $pid = $self->_pid_of_process_type($type)
           or $self->trace("Main process $type is not running"),
             next;
 
-        $self->_kill_pid($pid)
-            or $self->pretty_print($type, 'Failed to restart', 'red');
+        $type => $pid;
+    } $self->_expected_main_processes();
+
+    # killing mains, stanbys should be promoted instantly
+    my %running_pids = $self->_kill_pids(values %mains);
+
+    foreach my $type (%mains) {
+        my $pid = $mains{$type};
+        if ($pid && exists $running_pids{$pid}) {
+            # failed to restart process
+            $self->pretty_print($type, 'Failed to restart', 'red');
+        }
     }
 
     # starting mains
@@ -402,52 +418,75 @@ sub _pid_of_process_type {
     return $pid && $self->_pid_running($pid) ? $pid : undef;
 }
 
-sub _kill_pid {
-    my ($self, $pid) = @_;
-    $self->trace("_kill_pid(): $pid");
+sub _kill_pids {
+    my ($self, @p) = @_;
+    $self->trace("_kill_pids(): @p");
 
-    my $stop_file_timeout = $self->stop_file_kill_timeout // $self->kill_timeout;
-    my $signal_timeout    = $self->signal_kill_timeout    // $self->kill_timeout;
-
-    if ($self->main_stop_file) {
-        # main_stop_file is defined, try to touch it
-        my $stop_file_name = $self->_build_main_stop_file($pid);
-        $self->_write_file($stop_file_name);
-
-        my $end = Time::HiRes::time + $stop_file_timeout;
-        while (Time::HiRes::time < $end) {
-            if (not $self->_pid_running($pid)) {
-                $self->trace("Successfully killed $pid via stop file");
-                $self->_unlink_file($stop_file_name);
-                return 1;
-            }
-
-            Time::HiRes::sleep(0.1);
+    my %pids = map {
+        my $pid_and_maybe_cmd = $_;
+        if ($ENV{HADC_TRACE} && open(my $fh, '<', "/proc/$_/cmdline")) {
+            my $cmd = <$fh>;
+            close $fh;
+            $pid_and_maybe_cmd .= " ($cmd)" if $cmd;
         }
 
-        $self->info("Failed to kill process $pid via stop file");
-        $self->_unlink_file($stop_file_name);
+        $_ => $pid_and_maybe_cmd
+    } grep { $_ } @p;
+
+    # first create all stopfiles if necessary
+    if ($self->main_stop_file) {
+        foreach my $pid (keys %pids) {
+            $self->_write_file($self->_build_main_stop_file($pid));
+        }
+
+        my $stop_file_timeout = $self->stop_file_kill_timeout // $self->kill_timeout;
+        my $end = Time::HiRes::time + $stop_file_timeout;
+
+        while (Time::HiRes::time < $end) {
+            foreach my $pid (keys %pids) {
+                if (not $self->_pid_running($pid)) {
+                    $self->trace("Successfully killed $pids{$pid} via stop file");
+                    $self->_unlink_file($self->_build_main_stop_file($pid));
+                    delete $pids{$pid}
+                }
+
+                Time::HiRes::sleep(0.1);
+            }
+        }
+
+        foreach my $pid (keys %pids) {
+            $self->info("Failed to kill process $pids{$pid} via stop file");
+            $self->_unlink_file($self->_build_main_stop_file($pid));
+        }
     }
 
     my @stop_signals = @{ $self->stop_signals // [qw(TERM TERM INT KILL)] };
+    my $signal_timeout = $self->signal_kill_timeout // $self->kill_timeout;
 
     foreach my $signal (@stop_signals) {
-        $self->trace("Sending $signal signal to pid $pid...");
-        $self->_kill_or_die($signal, $pid);
+        foreach my $pid (keys %pids) {
+            $self->trace("Sending $signal signal to pid $pids{$pid}...");
+            $self->_kill_or_die($signal, $pid);
+        }
 
         my $end = Time::HiRes::time + $signal_timeout;
         while (Time::HiRes::time < $end) {
-            if (not $self->_pid_running($pid)) {
-                $self->trace("Successfully killed $pid");
-                return 1;
-            }
+            foreach my $pid (keys %pids) {
+                if (not $self->_pid_running($pid)) {
+                    $self->trace("Successfully killed $pids{$pid}");
+                    delete $pids{$pid}
+                }
 
-            Time::HiRes::sleep(0.1);
+                Time::HiRes::sleep(0.1);
+            }
         }
     }
 
-    $self->trace("Failed to kill $pid");
-    return 0;
+    foreach my $pid (keys %pids) {
+        $self->trace("Failed to kill $pids{$pid}");
+    }
+
+    return %pids;
 }
 
 sub _kill_or_die {
