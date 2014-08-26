@@ -442,7 +442,7 @@ sub _kill_pids {
         my $stop_file_timeout = $self->stop_file_kill_timeout // $self->kill_timeout;
         my $end = Time::HiRes::time + $stop_file_timeout;
 
-        while (Time::HiRes::time < $end) {
+        while (%pids && Time::HiRes::time < $end) {
             foreach my $pid (keys %pids) {
                 if (not $self->_pid_running($pid)) {
                     $self->trace("Successfully killed $pids{$pid} via stop file");
@@ -470,7 +470,7 @@ sub _kill_pids {
         }
 
         my $end = Time::HiRes::time + $signal_timeout;
-        while (Time::HiRes::time < $end) {
+        while (%pids && Time::HiRes::time < $end) {
             foreach my $pid (keys %pids) {
                 if (not $self->_pid_running($pid)) {
                     $self->trace("Successfully killed $pids{$pid}");
