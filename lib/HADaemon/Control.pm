@@ -18,7 +18,7 @@ our $VERSION = '0.5';
 my @accessors = qw(
     pid_dir quiet color_map name stop_file_kill_timeout signal_kill_timeout kill_timeout
     stop_signals program program_args stdout_file stderr_file umask directory ipc_cl_options
-    main_stop_file standby_stop_file uid gid log_file process_name_change
+    main_stop_file standby_stop_file uid gid log_file process_name_change close_fds_on_start
     path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc
 );
 
@@ -75,6 +75,9 @@ sub run_command {
 
     defined($self->kill_timeout)
         or $self->kill_timeout(1);
+
+    defined($self->close_fds_on_start)
+        or $self->close_fds_on_start(1);
 
     $self->standby_stop_file
         or $self->standby_stop_file($self->pid_dir . '/standby-stop-file');
@@ -531,11 +534,13 @@ sub _fork {
         $pid2 and $self->trace("forked $pid2");
 
         if ($pid2 == 0) { # Our double fork.
-            # close all file handlers but logging one
-            my $log_fd = fileno($self->{log_fh});
-            my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
-            $max_fd = 64 if !defined $max_fd or $max_fd < 0;
-            $log_fd != $_ and POSIX::close($_) foreach (3 .. $max_fd);
+            if ($self->close_fds_on_start) {
+                # close all file handlers but logging one
+                my $log_fd = fileno($self->{log_fh});
+                my $max_fd = POSIX::sysconf( &POSIX::_SC_OPEN_MAX );
+                $max_fd = 64 if !defined $max_fd or $max_fd < 0;
+                $log_fd != $_ and POSIX::close($_) foreach (3 .. $max_fd);
+            }
 
             # reopening STDIN, STDOUT, STDERR and redirect them to log_file
             # I need to redirect them because otherwise standbys will keep
@@ -1233,6 +1238,24 @@ If this boolean flag is set to a true value all output from the init script
 
     $daemon->quiet( 1 );
 
+=head2 close_fds_on_start
+
+By default HADC closes all file descriptors apart of STDIN, STDOUT, STDERR
+and lock fd (see HADC_lock_fd) when it starts main process.
+This is done to make sure that main and standby processes are really
+independent of each other.
+
+If this behaivor is not desirable, one can set close_fds_on_start to 0.
+But it should be understood that if parent process open any file descriptor
+(i.e. establish any connection, open file, create pipe, etc) those FDs will
+be available in *both* main and standby processes. Such case can be dangerous. Consider this:
+- parent processes (i.e. processes which run HADC) connect to DB
+- HADC starts main processes which uses that DB connection
+- HADC starts standby process
+- after a while main processes crashes and leave connectiong to DB in unpredicted state
+- standby processes promotes to main one and try to use *same* connection to DB.
+  Since connection is in unpredicted state, it failes to use connection and crashes too.
+
 =head1 INIT FILE CONSTRUCTOR OPTIONS
 
 The constructor also takes the following arguments to generate init file. See L</do_get_init_file>.
@@ -1428,6 +1451,9 @@ exiting from C<fork> syscal. One of the possible ways is to run:
 
     $ENV{HADC_lock_fd} and POSIX::close($ENV{HADC_lock_fd});
 
+Another source of troubles could be the fact that HADC closes all file descriptors apart
+of STDIN, STDOUT, STDERR and lock fd upon starting main processes (tunable via C<close_fds_on_start>).
+This's done for a reason. See C<close_fds_on_start> for details.
 
 =head1 AUTHOR
 
