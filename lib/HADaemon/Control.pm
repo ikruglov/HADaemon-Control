@@ -887,7 +887,9 @@ sub _log {
     }
 
     if ($self->{log_fh} && defined fileno($self->{log_fh})) {
-        my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime(time()));
+        my $now = Time::HiRes::time();
+        my ($sec, $ms) = split(/[.]/, $now);
+        my $date = POSIX::strftime("%Y-%m-%d %H:%M:%S", localtime($now)) . sprintf('.%05d', $ms);
         printf { $self->{log_fh} } "[%s][%d][%s] %s\n", $date, $$, $level, $message;
         $self->{log_fh}->flush();
     }
