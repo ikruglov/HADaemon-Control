@@ -869,9 +869,9 @@ sub pretty_print {
     $process_type =~ s/-/ #/;
 
     if ($ENV{HADC_NO_COLORS}) {
-        printf("%s: %-40s %40s\n", $self->name, $process_type, "[$message]");
+        printf("%-40s: %-40s %40s\n", $self->name, $process_type, "[$message]");
     } else {
-        printf("%s: %-40s %40s\n", $self->name, $process_type, "\033[$code" ."m[$message]\033[0m");
+        printf("%-40s: %-40s %40s\n", $self->name, $process_type, "\033[$code" ."m[$message]\033[0m");
     }
 }
 
