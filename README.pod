@@ -246,6 +246,24 @@ If this boolean flag is set to a true value all output from the init script
 
     $daemon->quiet( 1 );
 
+=head2 close_fds_on_start
+
+By default HADC closes all file descriptors apart of STDIN, STDOUT, STDERR
+and lock fd (see HADC_lock_fd) when it starts main process.
+This is done to make sure that main and standby processes are really
+independent of each other.
+
+If this behaivor is not desirable, one can set close_fds_on_start to 0.
+But it should be understood that if parent process open any file descriptor
+(i.e. establish any connection, open file, create pipe, etc) those FDs will
+be available in *both* main and standby processes. Such case can be dangerous. Consider this:
+- parent processes (i.e. processes which run HADC) connect to DB
+- HADC starts main processes which uses that DB connection
+- HADC starts standby process
+- after a while main processes crashes and leave connectiong to DB in unpredicted state
+- standby processes promotes to main one and try to use *same* connection to DB.
+  Since connection is in unpredicted state, it failes to use connection and crashes too.
+
 =head1 INIT FILE CONSTRUCTOR OPTIONS
 
 The constructor also takes the following arguments to generate init file. See L</do_get_init_file>.
@@ -441,6 +459,9 @@ exiting from C<fork> syscal. One of the possible ways is to run:
 
     $ENV{HADC_lock_fd} and POSIX::close($ENV{HADC_lock_fd});
 
+Another source of troubles could be the fact that HADC closes all file descriptors apart
+of STDIN, STDOUT, STDERR and lock fd upon starting main processes (tunable via C<close_fds_on_start>).
+This's done for a reason. See C<close_fds_on_start> for details.
 
 =head1 AUTHOR
 
