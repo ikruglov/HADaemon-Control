@@ -264,6 +264,12 @@ be available in *both* main and standby processes. Such case can be dangerous. C
 - standby processes promotes to main one and try to use *same* connection to DB.
   Since connection is in unpredicted state, it failes to use connection and crashes too.
 
+=head2 reset_close_on_exec_main_lock_fd
+
+By default perl sets close-on-exec flag for all opened file descriptors. If this flag is not
+desirable for lock fd one can set this option to true. This option should be set if client
+code do exec(). For details about close-on-exec check 'man fcntl'.
+
 =head1 INIT FILE CONSTRUCTOR OPTIONS
 
 The constructor also takes the following arguments to generate init file. See L</do_get_init_file>.
