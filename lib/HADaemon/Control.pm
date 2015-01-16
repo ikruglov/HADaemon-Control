@@ -4,6 +4,7 @@ use v5.14;
 use strict;
 use warnings;
 
+use Fcntl ();
 use POSIX ();
 use Time::HiRes;
 use Cwd qw(abs_path);
@@ -19,7 +20,7 @@ my @accessors = qw(
     pid_dir quiet color_map name stop_file_kill_timeout signal_kill_timeout kill_timeout
     stop_signals program program_args stdout_file stderr_file umask directory ipc_cl_options
     main_stop_file standby_stop_file uid gid log_file process_name_change close_fds_on_start
-    path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc
+    path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc reset_close_on_exec_main_lock_fd
 );
 
 foreach my $method (@accessors) {
@@ -674,6 +675,10 @@ sub _acquire_lock_and_launch_program {
         my $lock_fd = $self->_main_lock_fd($ipc);
         $lock_fd and $ENV{HADC_lock_fd} = $lock_fd;
 
+        # reset close-on-exec flag is required
+        $self->reset_close_on_exec_main_lock_fd
+          and $self->_reset_close_on_exec_main_lock_fd($ipc);
+
         # about to start the app, log_fh is not needed anymore
         close($self->{log_fh});
 
@@ -853,6 +858,19 @@ sub _main_lock_fd {
 
     $self->warn("failed to detect lock fd");
     return undef;
+}
+
+sub _reset_close_on_exec_main_lock_fd {
+    my ($self, $ipc) = @_;
+    if (   exists $ipc->{main_lock}
+        && exists $ipc->{main_lock}->{lock_obj}
+        && exists $ipc->{main_lock}->{lock_obj}->{lock_fh})
+    {
+        $self->info("reset close-on-exec main lock fd");
+        my $fh = $ipc->{main_lock}->{lock_obj}->{lock_fh};
+        my $flags = fcntl($fh, Fcntl::F_GETFD, 0) or $self->die("fcntl F_GETFD: $!");
+        fcntl($fh, Fcntl::F_SETFD, $flags & ~Fcntl::FD_CLOEXEC) or $self->die("fcntl F_SETFD: $!");
+    }
 }
 
 #####################################
@@ -1257,6 +1275,12 @@ be available in *both* main and standby processes. Such case can be dangerous. C
 - after a while main processes crashes and leave connectiong to DB in unpredicted state
 - standby processes promotes to main one and try to use *same* connection to DB.
   Since connection is in unpredicted state, it failes to use connection and crashes too.
+
+=head2 reset_close_on_exec_main_lock_fd
+
+By default perl sets close-on-exec flag for all opened file descriptors. If this flag is not
+desirable for lock fd one can set this option to true. This option should be set if client
+code do exec(). For details about close-on-exec check 'man fcntl'.
 
 =head1 INIT FILE CONSTRUCTOR OPTIONS
 
