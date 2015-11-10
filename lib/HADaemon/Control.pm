@@ -21,6 +21,7 @@ my @accessors = qw(
     stop_signals program program_args stdout_file stderr_file umask directory ipc_cl_options
     main_stop_file standby_stop_file uid gid log_file process_name_change close_fds_on_start
     path init_config init_code lsb_start lsb_stop lsb_sdesc lsb_desc reset_close_on_exec_main_lock_fd
+    main_upgrade_file upgrade_timeout
 );
 
 foreach my $method (@accessors) {
@@ -279,6 +280,67 @@ sub do_restart {
     return 0;
 }
 
+sub do_upgrade {
+    my ($self) = @_;
+    $self->info('do_upgrade()');
+    $self->main_upgrade_file or $self->die("upgrade requires 'main_upgrade_file'");
+
+    # shortcut
+    if (!$self->_main_running() && !$self->_standby_running()) {
+        return $self->do_start();
+    }
+
+    # stoping standby
+    $self->_precreate_directories();
+    $self->_write_file($self->standby_stop_file);
+
+    if (not $self->_wait_standbys_to_complete()) {
+        $self->pretty_print('stopping standby processes', 'Failed', 'red');
+        $self->warn("all standby processes should be stopped at this moment. Can't move forward");
+        $self->_print_check_log_file_for_details();
+        return 1;
+    }
+
+    $self->pretty_print('stopping standby processes', 'OK');
+
+    # starting standby
+    $self->_unlink_file($self->standby_stop_file);
+
+    if (!$self->_fork_standbys()) {
+        $self->pretty_print('starting standby', 'Failed', 'red');
+        $self->warn("all standby processes should be running at this moment. Can't move forward");
+        $self->_print_check_log_file_for_details();
+        return 1;
+    }
+
+    $self->pretty_print('starting standby processes', 'OK');
+
+    my %mains = map {
+        my $type = $_;
+        my $pid = $self->_pid_of_process_type($type)
+          or $self->trace("Main process $type is not running"),
+            next;
+
+        $type => $pid;
+    } $self->_expected_main_processes();
+
+    # upgrading mains, stanbys should be promoted instantly
+    my %failed_to_upgrade_pids = $self->_upgrade_pids(values %mains);
+    if (!%failed_to_upgrade_pids) {
+        $self->pretty_print('upgrading main processes', 'OK');
+        return 0;
+    }
+
+    foreach my $type (%mains) {
+        my $pid = $mains{$type};
+        if ($pid && exists $failed_to_upgrade_pids{$pid}) {
+            $self->pretty_print($type, 'Failed to upgrade', 'red');
+        }
+    }
+
+    return 1;
+}
+
 sub do_hard_restart {
     my ($self) = @_;
     $self->info('do_hard_restart()');
@@ -422,6 +484,51 @@ sub _pid_of_process_type {
     return $pid && $self->_pid_running($pid) ? $pid : undef;
 }
 
+sub _upgrade_pids {
+    my ($self, @p) = @_;
+    $self->trace("_upgrade_pids(): @p");
+
+    $self->main_upgrade_file or $self->die("upgrade requires 'main_upgrade_file'");
+    my $upgrade_timeout = $self->upgrade_timeout // $self->kill_timeout;
+
+    my %pids = map {
+        my $pid_and_maybe_cmd = $_;
+        if ($ENV{HADC_TRACE} && open(my $fh, '<', "/proc/$_/cmdline")) {
+            my $cmd = <$fh>;
+            close $fh;
+            $pid_and_maybe_cmd .= " ($cmd)" if $cmd;
+        }
+
+        $_ => $pid_and_maybe_cmd
+    } grep { $_ } @p;
+
+    my %upgrade_files;
+    foreach my $pid (keys %pids) {
+        my $file = $self->_build_main_upgrade_file($pid);
+        $upgrade_files{$pid} = $file;
+        $self->_write_file($file);
+    }
+
+    my $end = Time::HiRes::time + $upgrade_timeout;
+    while (%pids && Time::HiRes::time < $end) {
+        foreach my $pid (keys %pids) {
+            if (not -f $upgrade_files{$pid}) {
+                $self->trace("Successfully upgraded $pids{$pid} via upgrade file");
+                delete $pids{$pid}
+            }
+        }
+
+        Time::HiRes::sleep(0.1);
+    }
+
+    foreach my $pid (keys %pids) {
+        $self->info("Failed to upgrade process $pids{$pid} via upgrade file (will drop the file)");
+        $self->_unlink_file($upgrade_files{$pid});
+    }
+
+    return %pids;
+}
+
 sub _kill_pids {
     my ($self, @p) = @_;
     $self->trace("_kill_pids(): @p");
@@ -454,8 +561,9 @@ sub _kill_pids {
                     delete $pids{$pid}
                 }
 
-                Time::HiRes::sleep(0.1);
             }
+
+            Time::HiRes::sleep(0.1);
         }
 
         foreach my $pid (keys %pids) {
@@ -724,6 +832,11 @@ sub _build_main_stop_file {
     return ($self->main_stop_file =~ s/%p/$pid/gr);
 }
 
+sub _build_main_upgrade_file {
+    my ($self, $pid) = @_;
+    return ($self->main_upgrade_file =~ s/%p/$pid/gr);
+}
+
 sub _read_file {
     my ($self, $file) = @_;
     return undef unless -f $file;
@@ -790,6 +903,9 @@ sub _precreate_directories {
     }
     if ($self->{standby_stop_file}) {
         $self->_create_dir(dirname($self->{standby_stop_file}));
+    }
+    if ($self->{main_upgrade_file}) {
+        $self->_create_dir(dirname($self->{main_upgrade_file}));
     }
 }
 
