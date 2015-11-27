@@ -472,7 +472,7 @@ sub _pid_running {
         return 0;
     }
 
-    my $res = $self->_kill_or_die(0, $pid);
+    my $res = $self->_check_pid_via_kill($pid);
     $self->trace("pid $pid is " . ($res ? 'running' : 'not running'));
     return $res;
 }
@@ -612,6 +612,26 @@ sub _kill_or_die {
     }
 
     return $res;
+}
+
+sub _check_pid_via_kill {
+    my ($self, $pid) = @_;
+
+    my $kill_result = kill 0 => $pid;
+    my $os_error = $!;
+
+    if (!$kill_result and $os_error == POSIX::EINVAL) {
+        $self->die("_check_pid_via_kill: kill returned EINVAL, this is very weird");
+    }
+    elsif (!$kill_result and $os_error == POSIX::EPERM) {
+        # process exists but might belong to a different UID, that's fine
+        $kill_result = 1;
+    }
+    elsif (!$kill_result and $os_error == POSIX::ESRCH) {
+        # process not found, that's fine
+    }
+
+    return $kill_result;
 }
 
 sub _wait_standbys_to_complete {
