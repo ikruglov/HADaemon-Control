@@ -245,14 +245,14 @@ sub do_restart {
 
     $self->pretty_print('starting standby processes', 'OK');
 
-    my %mains = map {
-        my $type = $_;
-        my $pid = $self->_pid_of_process_type($type)
-          or $self->trace("Main process $type is not running"),
-            next;
-
-        $type => $pid;
-    } $self->_expected_main_processes();
+    my %mains;
+    foreach my $type ($self->_expected_main_processes()) {
+        if (my $pid = $self->_pid_of_process_type($type)) {
+            $mains{$type} = $pid;
+        } else {
+            $self->trace("Main process $type is not running");
+        }
+    }
 
     # killing mains, stanbys should be promoted instantly
     my %running_pids = $self->_kill_pids(values %mains);
@@ -315,14 +315,14 @@ sub do_upgrade {
 
     $self->pretty_print('starting standby processes', 'OK');
 
-    my %mains = map {
-        my $type = $_;
-        my $pid = $self->_pid_of_process_type($type)
-          or $self->trace("Main process $type is not running"),
-            next;
-
-        $type => $pid;
-    } $self->_expected_main_processes();
+    my %mains;
+    foreach my $type ($self->_expected_main_processes()) {
+        if (my $pid = $self->_pid_of_process_type($type)) {
+            $mains{$type} = $pid;
+        } else {
+            $self->trace("Main process $type is not running");
+        }
+    }
 
     # upgrading mains, stanbys should be promoted instantly
     my %failed_to_upgrade_pids = $self->_upgrade_pids(values %mains);
