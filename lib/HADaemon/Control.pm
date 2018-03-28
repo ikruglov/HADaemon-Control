@@ -13,7 +13,7 @@ use File::Basename qw(dirname);
 use Scalar::Util qw(weaken);
 use IPC::ConcurrencyLimit::WithStandby;
 
-our $VERSION = '1.004';
+our $VERSION = '1.005';
 
 # Accessor building
 my @accessors = qw(
