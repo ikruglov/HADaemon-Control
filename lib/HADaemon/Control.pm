@@ -907,7 +907,7 @@ sub _create_dir {
         }
 
         make_path($dir, $make_path_args);
-        @$errors and $self->die("failed make_path: " . join(' ', map { keys $_, values $_ } @$errors));
+        @$errors and $self->die("failed make_path: " . join(' ', map { keys %$_, values %$_ } @$errors));
         $self->trace("Created dir ($dir)");
     }
 }
